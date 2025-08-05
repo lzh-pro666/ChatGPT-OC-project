@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -14,6 +15,10 @@ typedef void (^StreamingResponseBlock)(NSString * _Nullable partialResponse, BOO
 
 // 流式请求 ChatGPT API
 - (NSURLSessionDataTask *)streamingChatCompletionWithMessages:(NSArray *)messages 
+                                               streamCallback:(StreamingResponseBlock)callback;
+// 流式请求 ChatGPT API(含图片)
+- (NSURLSessionDataTask *)streamingChatCompletionWithMessages:(NSArray *)messages
+                                                       images:(nullable NSArray<UIImage *> *)images
                                                streamCallback:(StreamingResponseBlock)callback;
 
 // 设置 API Key

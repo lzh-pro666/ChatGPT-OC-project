@@ -1,4 +1,10 @@
 #import <UIKit/UIKit.h>
+#import <PhotosUI/PhotosUI.h>
+#import <MobileCoreServices/MobileCoreServices.h>
+#import "CustomMenuView.h"
+#import "AlertHelper.h"
+#import "MediaPickerManager.h"
+
 @class Chat;
 
 NS_ASSUME_NONNULL_BEGIN

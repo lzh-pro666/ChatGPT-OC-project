@@ -18,6 +18,7 @@
 @property (nonatomic, strong) NSLayoutConstraint *inputContainerBottomConstraint;
 @property (nonatomic, strong) ThinkingView *thinkingView;
 @property (nonatomic, assign) BOOL isThinking;
+@property (nonatomic, strong) MediaPickerManager *mediaPickerManager;
 
 // 添加属性来持有当前的流式任务
 @property (nonatomic, strong) NSURLSessionDataTask *currentStreamingTask;
@@ -41,7 +42,9 @@
     [super viewDidLoad];
     [self setupViews];
     [self fetchMessages];
-    
+    self.mediaPickerManager = [[MediaPickerManager alloc] initWithPresenter:self];
+        self.mediaPickerManager.delegate = self;
+
     // 设置键盘通知
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(keyboardWillShow:) name:UIKeyboardWillShowNotification object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(keyboardWillHide:) name:UIKeyboardWillHideNotification object:nil];
@@ -214,123 +217,121 @@
 }
 
 - (void)setupInputArea {
-    // 创建输入容器视图
+    // 1. 创建视图
+    // 容器视图 (阴影层)
     self.inputContainerView = [[UIView alloc] init];
     self.inputContainerView.backgroundColor = [UIColor clearColor];
     self.inputContainerView.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.view addSubview:self.inputContainerView];
+    self.inputContainerView.layer.shadowColor = [UIColor grayColor].CGColor;
+    self.inputContainerView.layer.shadowOffset = CGSizeMake(0, -5);
+    self.inputContainerView.layer.shadowOpacity = 0.2;
+    self.inputContainerView.layer.shadowRadius = 4.0;
     
-    // 创建输入背景视图
+    // 背景视图 (圆角层)
     self.inputBackgroundView = [[UIView alloc] init];
-    self.inputBackgroundView.backgroundColor = [UIColor systemGray6Color];
-    self.inputBackgroundView.layer.cornerRadius = 18.0;
+    self.inputBackgroundView.backgroundColor = [UIColor systemGray6Color]; // 背景色延伸至底部
     self.inputBackgroundView.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.inputContainerView addSubview:self.inputBackgroundView];
-    
-    // 创建输入文本视图
+    self.inputBackgroundView.layer.cornerRadius = 23.0;
+    self.inputBackgroundView.layer.maskedCorners = kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner;
+    self.inputBackgroundView.layer.masksToBounds = YES;
+    self.inputBackgroundView.userInteractionEnabled = YES;
+
+    // 文本输入视图
     self.inputTextView = [[UITextView alloc] init];
-    self.inputTextView.font = [UIFont systemFontOfSize:15];
+    self.inputTextView.font = [UIFont systemFontOfSize:18];
     self.inputTextView.delegate = self;
     self.inputTextView.scrollEnabled = YES;
-    self.inputTextView.layer.cornerRadius = 18.0;
-    self.inputTextView.textContainerInset = UIEdgeInsetsMake(8, 8, 8, 8);
     self.inputTextView.backgroundColor = [UIColor clearColor];
+    self.inputTextView.textContainerInset = UIEdgeInsetsMake(8, 8, 8, 8);
     self.inputTextView.translatesAutoresizingMaskIntoConstraints = NO;
-    self.inputTextView.userInteractionEnabled = YES;
     
-    // 添加点击手势以确保点击输入框时成为第一响应者
-    UITapGestureRecognizer *tapGesture = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(handleInputTextViewTap:)];
-    tapGesture.cancelsTouchesInView = NO;
-    [self.inputTextView addGestureRecognizer:tapGesture];
-    
-    // 添加输入框到背景视图
-    [self.inputBackgroundView addSubview:self.inputTextView];
-    
-    // 创建占位符标签
+    // 占位符标签
     self.placeholderLabel = [[UILabel alloc] init];
-    self.placeholderLabel.text = @" 给ChatGPT发送信息";
+    self.placeholderLabel.text = @"  给ChatGPT发送信息";
     self.placeholderLabel.textColor = [UIColor lightGrayColor];
-    self.placeholderLabel.font = [UIFont systemFontOfSize:16];
+    self.placeholderLabel.font = [UIFont systemFontOfSize:18];
     self.placeholderLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.inputBackgroundView addSubview:self.placeholderLabel];
     
-    // 设置占位符标签的约束
-    [NSLayoutConstraint activateConstraints:@[
-        [self.placeholderLabel.leadingAnchor constraintEqualToAnchor:self.inputTextView.leadingAnchor constant:5],
-        [self.placeholderLabel.topAnchor constraintEqualToAnchor:self.inputTextView.topAnchor constant:8],
-    ]];
-    
-    // 设置输入框的高度约束
-    self.inputTextViewHeightConstraint = [self.inputTextView.heightAnchor constraintEqualToConstant:36];
-    self.inputTextViewHeightConstraint.active = YES;
-
-    // 确保tableView底部连接到inputContainer顶部
-    [NSLayoutConstraint activateConstraints:@[
-        [self.tableView.bottomAnchor constraintEqualToAnchor:self.inputContainerView.topAnchor],
-    ]];
-    
-    // 创建工具栏
+    // 工具栏
     UIView *toolbarView = [[UIView alloc] init];
     toolbarView.backgroundColor = [UIColor clearColor];
     toolbarView.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.inputContainerView addSubview:toolbarView];
     
-    // 创建添加按钮
+    // 添加按钮
     self.addButton = [UIButton buttonWithType:UIButtonTypeSystem];
     [self.addButton setImage:[UIImage systemImageNamed:@"plus.circle"] forState:UIControlStateNormal];
     self.addButton.tintColor = [UIColor blackColor];
+    [self.addButton addTarget:self action:@selector(addButtonTapped:) forControlEvents:UIControlEventTouchUpInside];
     self.addButton.translatesAutoresizingMaskIntoConstraints = NO;
-    [toolbarView addSubview:self.addButton];
     
-    // 创建发送按钮
+    // 发送按钮
     self.sendButton = [UIButton buttonWithType:UIButtonTypeSystem];
     [self.sendButton setImage:[UIImage systemImageNamed:@"arrow.up.circle.fill"] forState:UIControlStateNormal];
     self.sendButton.tintColor = [UIColor blackColor];
-    self.sendButton.translatesAutoresizingMaskIntoConstraints = NO;
     [self.sendButton addTarget:self action:@selector(sendButtonTapped) forControlEvents:UIControlEventTouchUpInside];
+    self.sendButton.translatesAutoresizingMaskIntoConstraints = NO;
+    
+    // 2. 添加视图层级
+    [self.view addSubview:self.inputContainerView];
+    [self.inputContainerView addSubview:self.inputBackgroundView];
+    [self.inputContainerView addSubview:toolbarView];
+    [self.inputBackgroundView addSubview:self.inputTextView];
+    [self.inputBackgroundView addSubview:self.placeholderLabel];
+    [toolbarView addSubview:self.addButton];
     [toolbarView addSubview:self.sendButton];
     
-    self.inputBackgroundView.userInteractionEnabled = YES;
+    // 3. 激活所有约束
+    // 将高度约束保存为属性，以便后续动态修改
+    self.inputTextViewHeightConstraint = [self.inputTextView.heightAnchor constraintEqualToConstant:36]; // 初始高度
     
-    // 设置约束
-    self.inputContainerBottomConstraint = [self.inputContainerView.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor];
+    // --- 修改点 1: 让容器的底部对齐到屏幕的真正底部，而不是安全区 ---
+    self.inputContainerBottomConstraint = [self.inputContainerView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor];
     
     [NSLayoutConstraint activateConstraints:@[
-        // 输入容器视图约束
-        self.inputContainerBottomConstraint,
-        [self.inputContainerView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:16],
+        // --- TableView 与 InputContainer 的连接 ---
+        [self.tableView.bottomAnchor constraintEqualToAnchor:self.inputContainerView.topAnchor],
+        
+        // --- 整体输入容器 (inputContainerView) ---
+        self.inputContainerBottomConstraint, // 已修改为对齐 self.view.bottomAnchor
+        [self.inputContainerView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
         [self.inputContainerView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         
-        // 输入背景视图约束
-        [self.inputBackgroundView.topAnchor constraintEqualToAnchor:self.inputContainerView.topAnchor constant:8],
-        [self.inputBackgroundView.leadingAnchor constraintEqualToAnchor:self.inputContainerView.leadingAnchor constant:16],
-        [self.inputBackgroundView.trailingAnchor constraintEqualToAnchor:toolbarView.leadingAnchor constant:-8],
-        [self.inputBackgroundView.bottomAnchor constraintEqualToAnchor:self.inputContainerView.bottomAnchor constant:-8],
+        // --- 背景视图 (inputBackgroundView) ---
+        [self.inputBackgroundView.topAnchor constraintEqualToAnchor:self.inputContainerView.topAnchor],
+        [self.inputBackgroundView.leadingAnchor constraintEqualToAnchor:self.inputContainerView.leadingAnchor],
+        [self.inputBackgroundView.trailingAnchor constraintEqualToAnchor:self.inputContainerView.trailingAnchor],
+        [self.inputBackgroundView.bottomAnchor constraintEqualToAnchor:self.inputContainerView.bottomAnchor],
         
-        // 工具栏约束
-        [toolbarView.topAnchor constraintEqualToAnchor:self.inputContainerView.topAnchor constant:8],
-        [toolbarView.trailingAnchor constraintEqualToAnchor:self.inputContainerView.trailingAnchor constant:-16],
-        [toolbarView.bottomAnchor constraintEqualToAnchor:self.inputContainerView.bottomAnchor constant:-8],
-        [toolbarView.widthAnchor constraintEqualToConstant:90],
+        // --- 工具栏 (toolbarView) ---
+        [toolbarView.topAnchor constraintEqualToAnchor:self.inputContainerView.topAnchor constant:15],
+        [toolbarView.trailingAnchor constraintEqualToAnchor:self.inputContainerView.trailingAnchor constant:-12],
+        // --- 修改点 2: 工具栏的底部对齐到容器的 *安全区域* 底部 ---
+        [toolbarView.bottomAnchor constraintEqualToAnchor:self.inputContainerView.safeAreaLayoutGuide.bottomAnchor constant:-15],
+        [toolbarView.widthAnchor constraintEqualToConstant:100],
         
-        // 添加按钮约束
+        // --- 添加按钮 (addButton) ---
         [self.addButton.leadingAnchor constraintEqualToAnchor:toolbarView.leadingAnchor constant:8],
         [self.addButton.centerYAnchor constraintEqualToAnchor:toolbarView.centerYAnchor],
-        [self.addButton.widthAnchor constraintEqualToConstant:36],
-        [self.addButton.heightAnchor constraintEqualToConstant:36],
+        [self.addButton.widthAnchor constraintEqualToConstant:46],
+        [self.addButton.heightAnchor constraintEqualToConstant:46],
         
-        // 发送按钮约束
+        // --- 发送按钮 (sendButton) ---
         [self.sendButton.trailingAnchor constraintEqualToAnchor:toolbarView.trailingAnchor constant:-8],
         [self.sendButton.centerYAnchor constraintEqualToAnchor:toolbarView.centerYAnchor],
-        [self.sendButton.widthAnchor constraintEqualToConstant:36],
-        [self.sendButton.heightAnchor constraintEqualToConstant:36],
+        [self.sendButton.widthAnchor constraintEqualToConstant:46],
+        [self.sendButton.heightAnchor constraintEqualToConstant:46],
         
-        // 输入文本视图约束
-        [self.inputTextView.topAnchor constraintEqualToAnchor:self.inputBackgroundView.topAnchor],
-        [self.inputTextView.leadingAnchor constraintEqualToAnchor:self.inputBackgroundView.leadingAnchor constant:20],
-        [self.inputTextView.trailingAnchor constraintEqualToAnchor:self.inputBackgroundView.trailingAnchor],
-        [self.inputTextView.bottomAnchor constraintEqualToAnchor:self.inputBackgroundView.bottomAnchor],
+        // --- 文本输入框 (inputTextView) ---
         self.inputTextViewHeightConstraint,
+        [self.inputTextView.topAnchor constraintEqualToAnchor:self.inputBackgroundView.topAnchor constant:15],
+        // --- 修改点 3: 输入框的底部也对齐到容器的 *安全区域* 底部 ---
+        [self.inputTextView.bottomAnchor constraintEqualToAnchor:self.inputContainerView.safeAreaLayoutGuide.bottomAnchor constant:-15],
+        [self.inputTextView.leadingAnchor constraintEqualToAnchor:self.inputBackgroundView.leadingAnchor constant:20],
+        [self.inputTextView.trailingAnchor constraintEqualToAnchor:toolbarView.leadingAnchor],
+        
+        // --- 占位符 (placeholderLabel) ---
+        [self.placeholderLabel.leadingAnchor constraintEqualToAnchor:self.inputTextView.leadingAnchor constant:5],
+        [self.placeholderLabel.centerYAnchor constraintEqualToAnchor:self.inputTextView.centerYAnchor]
     ]];
 }
 
@@ -387,6 +388,15 @@
 }
 
 #pragma mark - Message Handling
+
+- (void)addButtonTapped:(UIButton *)sender {
+    CustomMenuView *menuView = [[CustomMenuView alloc] initWithFrame:self.view.bounds];
+    
+    // 将按钮的中心点从其父视图的坐标系转换到 self.view 的坐标系
+    CGPoint centerPositionInSelfView = [sender.superview convertPoint:sender.center toView:self.view];
+    menuView.delegate = self;
+    [menuView showInView:self.view atPoint:CGPointMake(centerPositionInSelfView.x + 12, centerPositionInSelfView.y - 15)];
+}
 
 - (void)sendButtonTapped {
     if (self.inputTextView.text.length == 0) {
@@ -495,17 +505,17 @@
             CGFloat bottomOffset = contentHeight - visibleHeight;
             CGFloat distanceFromBottom = bottomOffset - currentOffset;
             
-            // 如果已经接近底部，使用平滑动画
-            if (distanceFromBottom < 100) {
-                [self.tableView scrollToRowAtIndexPath:lastIndexPath 
-                                     atScrollPosition:UITableViewScrollPositionBottom 
-                                             animated:YES];
-            } else {
+//            // 如果已经接近底部，使用平滑动画
+//            if (distanceFromBottom < 100) {
+//                [self.tableView scrollToRowAtIndexPath:lastIndexPath 
+//                                     atScrollPosition:UITableViewScrollPositionBottom 
+//                                             animated:YES];
+//            } else {
                 // 否则使用无动画跳转，避免长距离滚动带来的延迟感
-                [self.tableView scrollToRowAtIndexPath:lastIndexPath 
-                                     atScrollPosition:UITableViewScrollPositionBottom 
-                                             animated:NO];
-            }
+            [self.tableView scrollToRowAtIndexPath:lastIndexPath
+                                 atScrollPosition:UITableViewScrollPositionBottom
+                                         animated:NO];
+           // }
         });
     }
 }
@@ -517,6 +527,45 @@
         [self.tableView scrollToRowAtIndexPath:lastIndexPath atScrollPosition:UITableViewScrollPositionBottom animated:NO];
     }
 }
+
+#pragma mark - CustomMenuViewDelegate
+// 3. 实现菜单的代理方法
+- (void)customMenuViewDidSelectItemAtIndex:(NSInteger)index {
+    switch (index) {
+        case 0: // 照片
+            [self.mediaPickerManager presentPhotoPicker];
+            break;
+        case 1: // 摄像头
+            [self.mediaPickerManager presentCameraPicker];
+            break;
+        case 2: // 文件
+            [self.mediaPickerManager presentFilePicker];
+            break;
+    }
+}
+
+// 4. 实现新的、简洁的代理方法
+#pragma mark - MediaPickerManagerDelegate
+
+- (void)mediaPicker:(MediaPickerManager *)picker didPickImages:(NSArray<UIImage *> *)images {
+    NSLog(@"[ViewController] 成功收到了 %ld 张图片", images.count);
+    
+    // 在这里处理图片
+    // 例如：将图片添加到消息中，或者上传到服务器
+    // self.inputTextView.text = [NSString stringWithFormat:@"已选择 %ld 张图片", images.count];
+}
+
+- (void)mediaPicker:(MediaPickerManager *)picker didPickDocumentAtURL:(NSURL *)url {
+    NSLog(@"[ViewController] 成功收到了文件: %@", url.lastPathComponent);
+    
+    // 在这里处理文件
+    // self.inputTextView.text = [NSString stringWithFormat:@"已选择文件: %@", url.lastPathComponent];
+}
+
+- (void)mediaPickerDidCancel:(MediaPickerManager *)picker {
+    NSLog(@"[ViewController] 用户取消了选择");
+}
+
 
 #pragma mark - UITableViewDataSource
 
@@ -628,8 +677,11 @@
     }
     
     // 使用 API 进行请求，并保存任务对象
-    self.currentStreamingTask = [[APIManager sharedManager] streamingChatCompletionWithMessages:messages 
-                                                                               streamCallback:^(NSString *partialResponse, BOOL isDone, NSError *error) {
+    self.currentStreamingTask = [[APIManager sharedManager] streamingChatCompletionWithMessages:messages
+                                                                                         images:nil
+                                                                                 streamCallback:^(NSString *partialResponse, BOOL isDone, NSError *error) {
+//    self.currentStreamingTask = [[APIManager sharedManager] streamingChatCompletionWithMessages:messages
+//                                                                               streamCallback:^(NSString *partialResponse, BOOL isDone, NSError *error) {
         if (error) {
             // 处理错误
             [self hideThinkingStatus];
@@ -764,142 +816,75 @@
 }
 
 - (void)showAPIKeyAlert {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"设置 API Key"
-                                                                  message:@"请输入您的 OpenAI API Key"
-                                                           preferredStyle:UIAlertControllerStyleAlert];
-    
-    [alert addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
-        textField.placeholder = @"sk-...";
-        textField.secureTextEntry = YES;
-        
-        // 如果已有 API Key，则预填充（这里只显示前后几位，中间用星号代替）
-        NSString *apiKey = [[NSUserDefaults standardUserDefaults] stringForKey:@"OpenAIAPIKey"];
-        if (apiKey.length > 8) {
-            NSString *prefix = [apiKey substringToIndex:4];
-            NSString *suffix = [apiKey substringFromIndex:apiKey.length - 4];
-            textField.text = [NSString stringWithFormat:@"%@•••••%@", prefix, suffix];
-            textField.tag = 1; // 标记为已有 API Key
-        }
-    }];
-    
-    UIAlertAction *cancelAction = [UIAlertAction actionWithTitle:@"取消"
-                                                          style:UIAlertActionStyleCancel
-                                                        handler:nil];
-    
-    UIAlertAction *saveAction = [UIAlertAction actionWithTitle:@"保存"
-                                                        style:UIAlertActionStyleDefault
-                                                      handler:^(UIAlertAction * _Nonnull action) {
-        UITextField *textField = alert.textFields.firstObject;
-        NSString *apiKey = textField.text;
-        
-        // 检查是否是有效的 API Key 格式（简单检查）
-        if (apiKey.length < 10 || ![apiKey hasPrefix:@"sk-"]) {
-            if (textField.tag != 1) { // 如果不是已有 API Key
-                [self showErrorAlert:@"API Key 格式不正确，请输入有效的 API Key"];
-                return;
-            }
-            // 如果是已有 API Key 且未修改，则不做任何操作
-            return;
-        }
-        
-        // 保存 API Key
-        [[NSUserDefaults standardUserDefaults] setObject:apiKey forKey:@"OpenAIAPIKey"];
-        [[NSUserDefaults standardUserDefaults] synchronize];
-        
-        // 设置 API Manager 的 API Key
-        [[APIManager sharedManager] setApiKey:apiKey];
-        
-        // 显示成功提示
-        [self showSuccessAlert:@"API Key 已保存"];
-    }];
-    
-    [alert addAction:cancelAction];
-    [alert addAction:saveAction];
-    
-    [self presentViewController:alert animated:YES completion:nil];
+    NSString *apiKey = [[NSUserDefaults standardUserDefaults] stringForKey:@"OpenAIAPIKey"];
+        [AlertHelper showAPIKeyAlertOn:self withCurrentKey:apiKey withSaveHandler:^(NSString *newKey) {
+            // 保存 API Key
+            [[NSUserDefaults standardUserDefaults] setObject:newKey forKey:@"OpenAIAPIKey"];
+            [[NSUserDefaults standardUserDefaults] synchronize];
+            
+            // 设置 API Manager 的 API Key
+            [[APIManager sharedManager] setApiKey:newKey];
+            
+            // 显示成功提示
+            [AlertHelper showSuccessAlertOn:self withMessage:@"API Key 已保存"];
+        }];
 }
 
-- (void)showErrorAlert:(NSString *)message {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"错误"
-                                                                  message:message
-                                                           preferredStyle:UIAlertControllerStyleAlert];
-    
-    UIAlertAction *okAction = [UIAlertAction actionWithTitle:@"确定"
-                                                      style:UIAlertActionStyleDefault
-                                                    handler:nil];
-    
-    [alert addAction:okAction];
-    
-    [self presentViewController:alert animated:YES completion:nil];
-}
-
-- (void)showSuccessAlert:(NSString *)message {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"成功"
-                                                                  message:message
-                                                           preferredStyle:UIAlertControllerStyleAlert];
-    
-    UIAlertAction *okAction = [UIAlertAction actionWithTitle:@"确定"
-                                                      style:UIAlertActionStyleDefault
-                                                    handler:nil];
-    
-    [alert addAction:okAction];
-    
-    [self presentViewController:alert animated:YES completion:nil];
-}
+//- (void)showErrorAlert:(NSString *)message {
+//    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"错误"
+//                                                                  message:message
+//                                                           preferredStyle:UIAlertControllerStyleAlert];
+//    
+//    UIAlertAction *okAction = [UIAlertAction actionWithTitle:@"确定"
+//                                                      style:UIAlertActionStyleDefault
+//                                                    handler:nil];
+//    
+//    [alert addAction:okAction];
+//    
+//    [self presentViewController:alert animated:YES completion:nil];
+//}
+//
+//- (void)showSuccessAlert:(NSString *)message {
+//    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"成功"
+//                                                                  message:message
+//                                                           preferredStyle:UIAlertControllerStyleAlert];
+//    
+//    UIAlertAction *okAction = [UIAlertAction actionWithTitle:@"确定"
+//                                                      style:UIAlertActionStyleDefault
+//                                                    handler:nil];
+//    
+//    [alert addAction:okAction];
+//    
+//    [self presentViewController:alert animated:YES completion:nil];
+//}
 
 - (void)showNeedAPIKeyAlert {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"需要设置 API Key"
-                                                                  message:@"使用 ChatGPT 功能需要设置有效的 OpenAI API Key。立即设置吗？"
-                                                           preferredStyle:UIAlertControllerStyleAlert];
-    
-    UIAlertAction *cancelAction = [UIAlertAction actionWithTitle:@"稍后"
-                                                          style:UIAlertActionStyleCancel
-                                                        handler:nil];
-    
-    UIAlertAction *settingAction = [UIAlertAction actionWithTitle:@"立即设置"
-                                                           style:UIAlertActionStyleDefault
-                                                         handler:^(UIAlertAction * _Nonnull action) {
-        [self showAPIKeyAlert];
-    }];
-    
-    [alert addAction:cancelAction];
-    [alert addAction:settingAction];
-    
-    [self presentViewController:alert animated:YES completion:nil];
+    [AlertHelper showNeedAPIKeyAlertOn:self withSettingHandler:^{
+            [self showAPIKeyAlert]; // 调用下一个弹窗
+        }];
 }
 
 - (void)resetAPIKey {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"重置 API Key"
-                                                                  message:@"确定要重置当前的 API Key 吗？"
-                                                           preferredStyle:UIAlertControllerStyleAlert];
-    
-    UIAlertAction *cancelAction = [UIAlertAction actionWithTitle:@"取消"
-                                                         style:UIAlertActionStyleCancel
-                                                       handler:nil];
-    
-    UIAlertAction *resetAction = [UIAlertAction actionWithTitle:@"重置"
-                                                        style:UIAlertActionStyleDestructive
-                                                      handler:^(UIAlertAction * _Nonnull action) {
-        // 清除保存的API Key
-        [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"OpenAIAPIKey"];
-        [[NSUserDefaults standardUserDefaults] synchronize];
-        
-        // 清空API Manager中的API Key
-        [[APIManager sharedManager] setApiKey:@""];
-        
-        // 显示成功提示
-        [self showSuccessAlert:@"API Key 已重置，请设置新的 API Key"];
-        
-        // 提示用户设置新的API Key
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [self showAPIKeyAlert];
-        });
-    }];
-    
-    [alert addAction:cancelAction];
-    [alert addAction:resetAction];
-    
-    [self presentViewController:alert animated:YES completion:nil];
+    [AlertHelper showConfirmationAlertOn:self
+                                   withTitle:@"重置 API Key"
+                                     message:@"确定要重置当前的 API Key 吗？"
+                                confirmTitle:@"重置"
+                         confirmationHandler:^{
+            // 清除保存的API Key
+            [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"OpenAIAPIKey"];
+            [[NSUserDefaults standardUserDefaults] synchronize];
+            
+            // 清空API Manager中的API Key
+            [[APIManager sharedManager] setApiKey:@""];
+            
+            // 显示成功提示
+            [AlertHelper showSuccessAlertOn:self withMessage:@"API Key 已重置，请设置新的 API Key"];
+            
+            // 提示用户设置新的API Key
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                [self showAPIKeyAlert];
+            });
+        }];
 }
 
 - (BOOL)isTableViewScrolledToBottom {
@@ -912,29 +897,10 @@
 }
 
 - (void)showModelSelectionMenu:(UIButton *)sender {
-    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"选择模型"
-                                                                             message:nil
-                                                                      preferredStyle:UIAlertControllerStyleActionSheet];
-    
-    // 添加模型选项
-    [alertController addAction:[UIAlertAction actionWithTitle:@"GPT-3.5"
-                                                        style:UIAlertActionStyleDefault
-                                                      handler:^(UIAlertAction * _Nonnull action) {
-        [self updateModelSelection:@"gpt-3.5-turbo" button:sender];
-    }]];
-    
-    [alertController addAction:[UIAlertAction actionWithTitle:@"GPT-4o"
-                                                        style:UIAlertActionStyleDefault
-                                                      handler:^(UIAlertAction * _Nonnull action) {
-        [self updateModelSelection:@"gpt-4o" button:sender];
-    }]];
-    
-    // 添加取消选项
-    [alertController addAction:[UIAlertAction actionWithTitle:@"取消"
-                                                        style:UIAlertActionStyleCancel
-                                                      handler:nil]];
-    
-    [self presentViewController:alertController animated:YES completion:nil];
+    NSArray *models = @[@"gpt-3.5-turbo", @"gpt-4o"]; // 模型列表可以从配置或APIManager获取
+        [AlertHelper showModelSelectionMenuOn:self withModels:models selectionHandler:^(NSString *selectedModel) {
+            [self updateModelSelection:selectedModel button:sender];
+        }];
 }
 
 - (void)updateModelSelection:(NSString *)modelName button:(UIButton *)button {
