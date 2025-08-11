@@ -41,7 +41,7 @@ static NSString * const kOpenAIAPIEndpoint = @"https://xiaoai.plus/v1/chat/compl
                                                  delegate:self
                                             delegateQueue:delegateQueue];
         _stateAccessQueue = dispatch_queue_create("com.yourapp.apiManager.stateQueue", DISPATCH_QUEUE_SERIAL);
-        _defaultSystemPrompt = @"你是一个具有同理心的中文 ai 助手";
+        _defaultSystemPrompt = @"� 是一个具有同理心的中文 ai 助手";
         _taskCallbacks = [NSMutableDictionary dictionary];
         _taskAccumulatedData = [NSMutableDictionary dictionary];
         _taskBuffers = [NSMutableDictionary dictionary];
@@ -109,7 +109,7 @@ static NSString * const kOpenAIAPIEndpoint = @"https://xiaoai.plus/v1/chat/compl
             }
             self.taskAccumulatedData[taskIdentifier] = [NSMutableString string];
             self.taskBuffers[taskIdentifier] = [NSMutableData data];
-            // 同样保护 Set，即使是移除操作也算写入
+            // 同� �保护 Set，即使是移除操作也算写入
             [self.completedTaskIdentifiers removeObject:taskIdentifier];
         });
         
@@ -120,7 +120,7 @@ static NSString * const kOpenAIAPIEndpoint = @"https://xiaoai.plus/v1/chat/compl
         if (callback) {
             NSError *taskError = [NSError errorWithDomain:@"com.chatgpttest2.error" 
                                                     code:500 
-                                                userInfo:@{NSLocalizedDescriptionKey: @"无法创建网络任务"}];
+                                                userInfo:@{NSLocalizedDescriptionKey: @"� 法创建网络任务"}];
             callback(nil, YES, taskError);
         }
         return nil;
@@ -130,7 +130,7 @@ static NSString * const kOpenAIAPIEndpoint = @"https://xiaoai.plus/v1/chat/compl
 /**
  @brief 发起一个流式的聊天机器人请求，可选支持多模态（图文混合）。
  @param messages 对话历史记录数组。
- @param images 可选的图片数组。如果为 nil 或空，则为纯文本请求。
+ @param images 可选的图片数组。如果为 nil 或空，则为纯文�请求。
  @param callback 流式响应的回调 block。
  @return 用于控制任务的 NSURLSessionDataTask 对象。
  */
@@ -162,16 +162,16 @@ static NSString * const kOpenAIAPIEndpoint = @"https://xiaoai.plus/v1/chat/compl
         if (lastMessage && [lastMessage[@"content"] isKindOfClass:[NSString class]]) {
             NSString *originalText = lastMessage[@"content"];
             
-            // 创建一个新的 content 数组，用于存放文本和图片
+            // 创建一个新的 content 数组，用于存放文�和图片
             NSMutableArray *newContentParts = [NSMutableArray array];
             
-            // 添加文本部分
+            // 添� 文�部分
             [newContentParts addObject:@{
                 @"type": @"text",
-                @"text": originalText ?: @"" // 保证文本不为nil
+                @"text": originalText ?: @"" // 保证文�不为nil
             }];
             
-            // 循环添加所有图片部分
+            // 循环添� 所有图片部分
             for (UIImage *image in images) {
                 NSString *base64String = [self base64StringFromImage:image];
                 if (base64String) {
@@ -183,7 +183,7 @@ static NSString * const kOpenAIAPIEndpoint = @"https://xiaoai.plus/v1/chat/compl
                 }
             }
             
-            // 用新的 content 数组替换旧的 content 字符串
+            // 用新的 content 数组替换旧的 content 字�串
             lastMessage[@"content"] = newContentParts;
             
             // 更新 messages 数组
@@ -195,7 +195,7 @@ static NSString * const kOpenAIAPIEndpoint = @"https://xiaoai.plus/v1/chat/compl
             payloadMessages = messages;
         }
     } else {
-        // --- 纯文本请求逻辑 ---
+        // --- 纯文�请求逻辑 ---
         payloadMessages = messages;
     }
 
@@ -257,7 +257,7 @@ static NSString * const kOpenAIAPIEndpoint = @"https://xiaoai.plus/v1/chat/compl
         if (callback) {
             NSError *taskError = [NSError errorWithDomain:@"com.yourapp.api"
                                                      code:500
-                                                 userInfo:@{NSLocalizedDescriptionKey: @"无法创建网络任务"}];
+                                                 userInfo:@{NSLocalizedDescriptionKey: @"� 法创建网络任务"}];
             dispatch_async(dispatch_get_main_queue(), ^{
                 callback(nil, YES, taskError);
             });
@@ -284,11 +284,11 @@ didReceiveResponse:(NSURLResponse *)response
     NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)response;
     if (httpResponse.statusCode != 200) {
         NSNumber *taskIdentifier = @(dataTask.taskIdentifier);
-        NSString *errorMessage = [NSString stringWithFormat:@"API 请求失败，状态码: %ld", (long)httpResponse.statusCode];
+        NSString *errorMessage = [NSString stringWithFormat:@"API 请求失败，状态� �: %ld", (long)httpResponse.statusCode];
         NSError *apiError = [NSError errorWithDomain:@"com.yourapp.api" code:httpResponse.statusCode userInfo:@{NSLocalizedDescriptionKey: errorMessage}];
 
         // --- 逻辑优化 ---
-        // 1. 立即标记任务为完成，并获取回调
+        // 1. 立即� �记任务为完成，并获取回调
         __block StreamingResponseBlock callback;
         dispatch_sync(self.stateAccessQueue, ^{
             [self.completedTaskIdentifiers addObject:taskIdentifier];
@@ -309,7 +309,7 @@ didReceiveResponse:(NSURLResponse *)response
     }
 }
 
-// 收到数据 (优化后版本)
+// 收到数据 (优化后版�)
 - (void)URLSession:(NSURLSession *)session
           dataTask:(NSURLSessionDataTask *)dataTask
     didReceiveData:(NSData *)data {
@@ -336,37 +336,37 @@ didReceiveResponse:(NSURLResponse *)response
         return;
     }
 
-    // 2. 将新收到的数据追加到缓冲区
+    // 2. 将新收到的数据追� 到缓冲区
     [buffer appendData:data];
 
-    // 3. 定义 SSE 事件分隔符 (两个换行符)
+    // 3. 定义 SSE 事件分隔� (两个换行�)
     const char *delimiter = "\n\n";
     NSData *delimiterData = [NSData dataWithBytes:delimiter length:strlen(delimiter)];
 
     // 4. 循环处理缓冲区中的完整 SSE 事件
     while (YES) {
-        // 查找第一个分隔符的位置
+        // 查找�一个分隔�的位置
         NSRange delimiterRange = [buffer rangeOfData:delimiterData options:0 range:NSMakeRange(0, buffer.length)];
 
-        // 如果找不到分隔符，说明当前缓冲区中没有一个完整的事件，退出循环，等待更多数据
+        // 如果找不到分隔�，说明当前缓冲区中没有一个完整的事件，退出循环，等待更多数据
         if (delimiterRange.location == NSNotFound) {
             break;
         }
 
         // --- 找到一个完整的事件 ---
 
-        // 提取事件数据 (从开头到分隔符之前)
+        // 提取事件数据 (从开头到分隔�之前)
         NSUInteger eventLength = delimiterRange.location;
         NSData *eventData = [buffer subdataWithRange:NSMakeRange(0, eventLength)];
 
-        // 从缓冲区中移除已处理的事件数据和分隔符
+        // 从缓冲区中移除已处理的事件数据和分隔�
         NSUInteger processedLength = eventLength + delimiterRange.length;
         [buffer replaceBytesInRange:NSMakeRange(0, processedLength) withBytes:NULL length:0];
 
-        // 将事件数据转换为字符串进行解析
+        // 将事件数据�换为字�串进行解析
         NSString *eventString = [[NSString alloc] initWithData:eventData encoding:NSUTF8StringEncoding];
         
-        // 如果解码失败，跳过这个事件
+        // 如果解� �失败，跳过这个事件
         if (!eventString) {
             continue;
         }
@@ -378,9 +378,9 @@ didReceiveResponse:(NSURLResponse *)response
                 NSString *jsonDataString = [line substringFromIndex:6];
                 NSString *trimmedData = [jsonDataString stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
 
-                // 检查是否是流结束的标志
+                // 检查是否是流结束的� �志
                 if ([trimmedData isEqualToString:@"[DONE]"]) {
-                    // 标记任务已通过 [DONE] 正常完成
+                    // � �记任务已通过 [DONE] 正常完成
                     // 保护对 Set 的写入操作
                     dispatch_sync(self.stateAccessQueue, ^{
                         [self.completedTaskIdentifiers addObject:taskIdentifier];
@@ -392,7 +392,7 @@ didReceiveResponse:(NSURLResponse *)response
                         callback(accumulatedContent, YES, nil);
                     });
                     
-                    // 已完成，无需再解析此事件的后续行
+                    // 已完成，� 需再解析此事件的后续行
                     break;
                 }
 
@@ -402,7 +402,7 @@ didReceiveResponse:(NSURLResponse *)response
                 NSDictionary *jsonObj = [NSJSONSerialization JSONObjectWithData:jsonData options:0 error:&jsonError];
 
                 if (jsonError) {
-                    // JSON 解析失败，可以根据需要选择忽略或报告错误
+                    // JSON 解析失败，可以� �据需要选择忽略或报告错误
                     NSLog(@"JSON parsing error: %@", jsonError.localizedDescription);
                     continue;
                 }
@@ -442,7 +442,7 @@ didReceiveResponse:(NSURLResponse *)response
 didCompleteWithError:(nullable NSError *)error {
     NSNumber *taskIdentifier = @(task.taskIdentifier);
     
-    // 检查是否已经通过 [DONE] 标记为完成
+    // 检查是否已经通过 [DONE] � �记为完成
     __block StreamingResponseBlock callback;
     __block NSMutableString *accumulatedContent;
     __block BOOL alreadyCompleted;
@@ -476,7 +476,7 @@ didCompleteWithError:(nullable NSError *)error {
     [self cleanupTask:task];
 }
 
-// 将UIImage转换为Base64字符串
+// 将UIImage�换为Base64字�串
 - (NSString *)base64StringFromImage:(UIImage *)image {
     // 为了性能，可以适当压缩图片质量和尺寸
     NSData *imageData = UIImageJPEGRepresentation(image, 0.7); // 0.7 是压缩质量

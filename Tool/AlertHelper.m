@@ -39,7 +39,7 @@
             NSString *prefix = [currentKey substringToIndex:4];
             NSString *suffix = [currentKey substringFromIndex:currentKey.length - 4];
             textField.text = [NSString stringWithFormat:@"%@•••••%@", prefix, suffix];
-            textField.tag = 1; // 标记为已有 API Key，避免不修改也提示格式错误
+            textField.tag = 1; // � �记为已有 API Key，避免不修改也提示� �式错误
         }
     }];
 
@@ -48,18 +48,18 @@
         UITextField *textField = alert.textFields.firstObject;
         NSString *apiKey = textField.text;
 
-        // 如果是未修改过的已有Key的掩码形式，则直接返回
+        // 如果是未修改过的已有Key的掩� �形式，则直接返回
         if (textField.tag == 1 && ![apiKey hasPrefix:@"sk-"]) {
             return;
         }
 
-        // 简单格式校验
+        // 简单� �式� �验
         if (apiKey.length > 10 && [apiKey hasPrefix:@"sk-"]) {
             if (saveHandler) {
                 saveHandler(apiKey);
             }
         } else {
-            [self showErrorAlertOn:presenter withMessage:@"API Key 格式不正确，请输入有效的 API Key"];
+            [self showErrorAlertOn:presenter withMessage:@"API Key � �式不正确，请输入有效的 API Key"];
         }
     }]];
 

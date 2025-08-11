@@ -16,7 +16,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 @interface CustomMenuView : UIView
 
-// 2. 添加一个弱引用的 delegate 属性
+// 2. 添� 一个弱引用的 delegate 属性
 @property (nonatomic, weak) id<CustomMenuViewDelegate> delegate;
 
 - (instancetype)initWithFrame:(CGRect)frame;

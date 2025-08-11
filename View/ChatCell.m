@@ -11,14 +11,14 @@
 }
 
 - (void)setupViews {
-    // 标题标签
+    // � �题� �签
     self.titleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
     self.titleLabel.font = [UIFont systemFontOfSize:16 weight:UIFontWeightMedium];
     self.titleLabel.textColor = [UIColor blackColor];
     self.titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
     [self.contentView addSubview:self.titleLabel];
     
-    // 日期标签
+    // 日期� �签
     self.dateLabel = [[UILabel alloc] initWithFrame:CGRectZero];
     self.dateLabel.font = [UIFont systemFontOfSize:14];
     self.dateLabel.textColor = [UIColor colorWithWhite:0.4 alpha:1.0]; // #666

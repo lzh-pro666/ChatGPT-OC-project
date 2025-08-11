@@ -71,7 +71,7 @@
         CFTimeInterval delay = idx * 0.16;
         scaleAnimation.beginTime = CACurrentMediaTime() + delay;
         
-        // 添加动画
+        // 添� 动画
         [dot.layer addAnimation:scaleAnimation forKey:@"thinking"];
     }];
 }

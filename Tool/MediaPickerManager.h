@@ -37,7 +37,7 @@ NS_ASSUME_NONNULL_BEGIN
  */
 - (instancetype)initWithPresenter:(UIViewController *)presenter;
 
-// 3. 提供给外部调用的公共方法
+// 3. 提供给外部调用的�共方法
 - (void)presentPhotoPicker;
 - (void)presentCameraPicker;
 - (void)presentFilePicker;

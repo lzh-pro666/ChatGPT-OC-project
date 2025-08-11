@@ -29,7 +29,7 @@
 - (void)setupViews {
     self.view.backgroundColor = [UIColor whiteColor];
     
-    // 标题视图
+    // � �题视图
     UIView *headerView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.view.bounds.size.width, 80)];
     
     UILabel *titleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
@@ -48,7 +48,7 @@
     self.addChatButton.layer.cornerRadius = 16;
     [self.addChatButton addTarget:self action:@selector(createNewChat) forControlEvents:UIControlEventTouchUpInside];
     
-    // 添加"+"图标
+    // 添� "+"图� �
     UIImageView *plusIcon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"plus"]];
     plusIcon.tintColor = [UIColor blackColor];
     plusIcon.contentMode = UIViewContentModeScaleAspectFit;
@@ -73,7 +73,7 @@
         [plusIcon.heightAnchor constraintEqualToConstant:16]
     ]];
     
-    // 表格视图
+    // 表� �视图
     self.tableView = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStylePlain];
     self.tableView.delegate = self;
     self.tableView.dataSource = self;
@@ -86,12 +86,12 @@
     self.tableView.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:self.tableView];
     
-    // 添加长按手势
+    // 添� 长按手势
     UILongPressGestureRecognizer *longPress = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(handleLongPress:)];
     longPress.minimumPressDuration = 0.5; // 设置长按时间为0.5秒
     [self.tableView addGestureRecognizer:longPress];
     
-    // 添加左滑返回手势
+    // 添� 左滑返回手势
     UISwipeGestureRecognizer *swipeGesture = [[UISwipeGestureRecognizer alloc] initWithTarget:self action:@selector(handleSwipe:)];
     swipeGesture.direction = UISwipeGestureRecognizerDirectionLeft;
     [self.view addGestureRecognizer:swipeGesture];
@@ -157,7 +157,7 @@
         NSIndexPath *indexPath = [self.tableView indexPathForRowAtPoint:point];
         
         if (indexPath) {
-            // 设置选中行以便删除操作知道要删除哪个聊天
+            // 设置选中行以便� 除操作知道要� 除哪个聊天
             [self.tableView selectRowAtIndexPath:indexPath animated:NO scrollPosition:UITableViewScrollPositionNone];
             
             // 创建弹出菜单而不是使用UIMenuController (适用于iOS 13+)
@@ -165,7 +165,7 @@
                                                                                     message:nil
                                                                              preferredStyle:UIAlertControllerStyleActionSheet];
             
-            UIAlertAction *deleteAction = [UIAlertAction actionWithTitle:@"删除"
+            UIAlertAction *deleteAction = [UIAlertAction actionWithTitle:@"� 除"
                                                                    style:UIAlertActionStyleDestructive
                                                                  handler:^(UIAlertAction * _Nonnull action) {
                 [self deleteChat:nil];
@@ -185,13 +185,13 @@
 
 - (void)handleSwipe:(UISwipeGestureRecognizer *)gestureRecognizer {
     if (gestureRecognizer.direction == UISwipeGestureRecognizerDirectionLeft) {
-        // 模拟点击了导航栏的返回按钮
+        // 模拟点击了导航� �的返回按钮
         [self.navigationController popViewControllerAnimated:YES];
     }
 }
 
 - (BOOL)canBecomeFirstResponder {
-    return YES; // 允许视图成为第一响应者，以便显示菜单
+    return YES; // 允许视图成为�一响应者，以便显示菜单
 }
 
 - (BOOL)canPerformAction:(SEL)action withSender:(id)sender {
@@ -208,18 +208,18 @@
         NSManagedObject *chatToDelete = self.chatList[indexPath.row];
         
         // 显示确认对话框
-        UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"确认删除"
-                                                                                message:@"确定要删除这个聊天吗？此操作不可撤销。"
+        UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"确认� 除"
+                                                                                message:@"确定要� 除这个聊天吗？此操作不可撤销。"
                                                                          preferredStyle:UIAlertControllerStyleAlert];
         
         UIAlertAction *cancelAction = [UIAlertAction actionWithTitle:@"取消"
                                                               style:UIAlertActionStyleCancel
                                                             handler:nil];
         
-        UIAlertAction *deleteAction = [UIAlertAction actionWithTitle:@"删除"
+        UIAlertAction *deleteAction = [UIAlertAction actionWithTitle:@"� 除"
                                                              style:UIAlertActionStyleDestructive
                                                            handler:^(UIAlertAction * _Nonnull action) {
-            // 删除聊天
+            // � 除聊天
             [[CoreDataManager sharedManager].managedObjectContext deleteObject:chatToDelete];
             [[CoreDataManager sharedManager] saveContext];
             
@@ -229,7 +229,7 @@
             // 更新UI
             [self.tableView reloadData];
             
-            // 如果删除后没有聊天了，自动创建一个新聊天
+            // 如果� 除后没有聊天了，自动创建一个新聊天
             if (self.chatList.count == 0) {
                 [self createNewChat];
             }
@@ -245,7 +245,7 @@
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
     
-    // 如果有动画，为返回添加动画
+    // 如果有动画，为返回添� 动画
     if ([self.navigationController.viewControllers indexOfObject:self] == NSNotFound) {
         CATransition *transition = [CATransition animation];
         transition.duration = 0.3;

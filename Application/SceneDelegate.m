@@ -26,7 +26,7 @@
         UIWindowScene *windowScene = (UIWindowScene *)scene;
         self.window = [[UIWindow alloc] initWithWindowScene:windowScene];
         
-        // 设置根视图控制器
+        // 设置� �视图控制器
         MainViewController *mainViewController = [[MainViewController alloc] init];
         self.window.rootViewController = mainViewController;
         

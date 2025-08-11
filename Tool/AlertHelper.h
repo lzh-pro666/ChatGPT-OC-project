@@ -44,11 +44,11 @@ NS_ASSUME_NONNULL_BEGIN
 + (void)showSuccessAlertOn:(UIViewController *)presenter withMessage:(NSString *)message;
 
 /**
- * @brief 显示一个确认操作的弹窗 (例如重置、删除等)。
+ * @brief 显示一个确认操作的弹窗 (例如重置、� 除等)。
  * @param presenter 用于呈现弹窗的视图控制器。
- * @param title 弹窗标题。
+ * @param title 弹窗� �题。
  * @param message 弹窗消息。
- * @param confirmTitle 确认按钮的标题 (通常是 "重置", "删除" 等)。
+ * @param confirmTitle 确认按钮的� �题 (通常是 "重置", "� 除" 等)。
  * @param confirmationHandler 用户点击确认按钮后的回调。
  */
 + (void)showConfirmationAlertOn:(UIViewController *)presenter

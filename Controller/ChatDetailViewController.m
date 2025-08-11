@@ -1,1121 +1,2081 @@
 #import "ChatDetailViewController.h"
-#import "MessageCell.h"
-#import "ThinkingView.h"
+#import <AsyncDisplayKit/ASDisplayNode+Beta.h>
+//#import "MessageCell.h"
+//#import "ThinkingView.h"
+
+#import "ThinkingNode.h"
+#import "MessageCellNode.h"
+#import "AttachmentThumbnailView.h"
 #import "CoreDataManager.h"
 #import "APIManager.h"
+
 @import CoreData;
+#import <QuickLookThumbnailing/QuickLookThumbnailing.h>
 
 
-@interface ChatDetailViewController () <UITableViewDelegate, UITableViewDataSource, UITextViewDelegate>
 
-@property (nonatomic, strong) UITableView *tableView;
+// 每次定时器触发时显示的字数，调大此值可加快打字速度
+
+static const NSInteger kTypingSpeedCharacterChunk = 3;
+
+// 定时器触发间隔，调小此值可加快打字速度
+
+static const NSTimeInterval kTypingTimerInterval = 0.05;
+
+
+
+@interface ChatDetailViewController () <UITextViewDelegate, ASTableDataSource, ASTableDelegate>
+
+
+
 @property (nonatomic, strong) NSMutableArray *messages;
+
 @property (nonatomic, strong) UIView *inputContainerView;
+
 @property (nonatomic, strong) UIView *inputBackgroundView;
+
 @property (nonatomic, strong) UITextView *inputTextView;
+
 @property (nonatomic, strong) UIButton *addButton;
+
 @property (nonatomic, strong) UIButton *sendButton;
+
 @property (nonatomic, strong) NSLayoutConstraint *inputContainerBottomConstraint;
-@property (nonatomic, strong) ThinkingView *thinkingView;
-@property (nonatomic, assign) BOOL isThinking;
+
+//@property (nonatomic, strong) ThinkingView *thinkingView;
+
+//@property (nonatomic, assign) BOOL isThinking;
+
 @property (nonatomic, strong) MediaPickerManager *mediaPickerManager;
 
+// 打字机动画属性 (修正版)
+@property (nonatomic, strong) NSTimer *typingTimer;
+@property (nonatomic, strong) NSMutableString *fullResponseBuffer; // 用于流式响应的完整文本缓冲区
+@property (nonatomic, assign) NSInteger displayedTextLength;      // 当前UI上已经显示的文本长度
+@property (nonatomic, weak) MessageCellNode *currentUpdatingAINode; // 持有正在更新的AI消息节点的弱引用
+
+
+// --- 应该被重命名或修改 ---
+
+@property (nonatomic, assign) BOOL isAIThinking; // 使用这个布尔值来驱动UI状态，而不是 isThinking
+
+
+// 新增：用于管理缩略图的容器和数据
+
+@property (nonatomic, strong) UIStackView *thumbnailsStackView; // 使用 StackView 管理多个缩略图
+
+@property (nonatomic, strong) NSLayoutConstraint *thumbnailsContainerHeightConstraint; // 用于控制容器高度的 核心约束
+
+@property (nonatomic, strong) NSMutableArray *selectedAttachments; // 使用数组存储多个附件 (UIImage 或 NSURL)
+
+
+
 // 添加属性来持有当前的流式任务
+
 @property (nonatomic, strong) NSURLSessionDataTask *currentStreamingTask;
 
+
+
 // 添加属性来持有正在更新的 AI 消息对象
+
 @property (nonatomic, weak) NSManagedObject *currentUpdatingAIMessage;
 
-// 添加属性来保存上一次的回复内容，用于计算增量
-@property (nonatomic, copy) NSString *lastResponseContent;
 
-// 添加逐字打印相关属性
-@property (nonatomic, strong) NSMutableString *typingBuffer; // 保存待显示的文本缓冲区
-@property (nonatomic, strong) NSTimer *typingTimer; // 打字定时器
-@property (nonatomic, assign) NSTimeInterval typingSpeed; // 打字速度(秒)
+
+// --- 新增 ---
+
+@property (nonatomic, strong) ASTableNode *tableNode;
+
+
+
+//@property (nonatomic, strong) NSTimer *typingTimer; // 打字效果的定时器
+
+//@property (nonatomic, assign) NSRange typingProgress; // 跟踪当前已显示的文范围
+
+
+//// 一个“脏” 记，用于聚合UI更新，避免过于频繁地调用 performBatchUpdates
+
+//@property (nonatomic, assign) BOOL needsUIUpdate;
+
+
+// --- ✨ 新增：用于实现丝滑滚动动画的属性 ---
+
+@property (nonatomic, strong) CADisplayLink *displayLink; // 与屏幕刷新同步的定时器
 
 @end
 
+
+
 @implementation ChatDetailViewController
 
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    [self setupViews];
-    [self fetchMessages];
-    self.mediaPickerManager = [[MediaPickerManager alloc] initWithPresenter:self];
-        self.mediaPickerManager.delegate = self;
 
-    // 设置键盘通知
+
+- (void)viewDidLoad {
+
+    [super viewDidLoad];
+    // --- FIX: 正确的初始化顺序 ---
+
+    // 1. 初始化非视图相关的属性
+
+    self.isAIThinking = NO;
+    self.fullResponseBuffer = [NSMutableString string];
+    self.selectedAttachments = [NSMutableArray array];
+
+    // 2. 初始化并添加 核心UI组件（ASTableNode）
+
+    // 必须在 setupViews 之前执行， 因为 setupViews 会为 tableNode 创建约束
+
+    _tableNode = [[ASTableNode alloc] initWithStyle:UITableViewStylePlain];
+    _tableNode.dataSource = self;
+    _tableNode.delegate = self;
+    _tableNode.view.separatorStyle = UITableViewCellSeparatorStyleNone;
+    [self.view addSubnode:_tableNode];
+
+    // 3. 设置所有视图和它的布局约束
+    // 现在调用是安全的， 因为 self.tableNode 已经是一个有效的对象
+
+    [self setupViews];
+
+    // 4. 初始化辅助类和 载数据
+
+    self.mediaPickerManager = [[MediaPickerManager alloc] initWithPresenter:self];
+
+    self.mediaPickerManager.delegate = self;
+
+    [self fetchMessages]; // 在UI设置好后 载数据
+
+    // 5. 设置通知和其他UI状态
+
+    [self updatePlaceholderVisibility]; // 依赖于 setupViews 中创建的 placeholderLabel
+
+
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(keyboardWillShow:) name:UIKeyboardWillShowNotification object:nil];
+
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(keyboardWillHide:) name:UIKeyboardWillHideNotification object:nil];
-    
-    // 添加应用程序状态通知
+
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(applicationWillResignActive:) name:UIApplicationWillResignActiveNotification object:nil];
+
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(applicationDidEnterBackground:) name:UIApplicationDidEnterBackgroundNotification object:nil];
-    
-    // 初始化占位符状态
-    [self updatePlaceholderVisibility];
-    
-    // 初始化逐字打印相关属性
-    self.typingBuffer = [NSMutableString string];
-    self.typingSpeed = 0.03; // 固定打字速度为每字符0.03秒
-    
-    // 加载保存的 API Key
+
+    // 6.  载用户设置和API Key
+
     NSString *apiKey = [[NSUserDefaults standardUserDefaults] stringForKey:@"OpenAIAPIKey"];
+
     if (apiKey.length > 0) {
+
         [[APIManager sharedManager] setApiKey:apiKey];
+
     } else {
-        // 如果没有设置 API Key，提示用户设置
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [self showNeedAPIKeyAlert];
-        });
+
+    // 如果没有设置 API Key，在短暂延迟后提示用户设置
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+
+        [self showNeedAPIKeyAlert];
+    });
+
     }
-    
-    // 加载保存的默认提示词
+
     NSString *defaultPrompt = [[NSUserDefaults standardUserDefaults] stringForKey:@"DefaultSystemPrompt"];
+
     if (defaultPrompt.length > 0) {
+
         [APIManager sharedManager].defaultSystemPrompt = defaultPrompt;
+
     }
-    
-    // 加载保存的模型选择
+
+
     NSString *selectedModel = [[NSUserDefaults standardUserDefaults] stringForKey:@"SelectedModelName"];
+
     if (selectedModel.length > 0) {
+
         [APIManager sharedManager].currentModelName = selectedModel;
+
     }
+
 }
 
 - (void)viewWillAppear:(BOOL)animated {
+
     [super viewWillAppear:animated];
+
     [self fetchMessages];
-    [self.tableView reloadData];
+
+    // --- 修改 ---
+
+    [self.tableNode reloadData];
+
 }
+
+
 
 - (void)viewWillDisappear:(BOOL)animated {
+
     [super viewWillDisappear:animated];
-    
-    // 当视图即将消失时，清空打印缓冲区并显示全部内容
-    [self flushTypingBuffer];
-    
-    // 当视图即将消失时，取消当前的流式任务
+
+    [self stopTypingTimer];
+
     if (self.currentStreamingTask) {
+
         [[APIManager sharedManager] cancelStreamingTask:self.currentStreamingTask];
+
         self.currentStreamingTask = nil;
-        [self hideThinkingStatus]; // 隐藏思考状态
+
+        // --- FIX:  除此行 ---
+
+        // [self hideThinkingStatus]; // 这个方法已被 除，现在由数据驱动
+
+        // --- FIX: 如果AI仍在思考，则更新数据源并刷新UI ---
+
+        if (self.isAIThinking) {
+
+            self.isAIThinking = NO;
+
+            [self.tableNode reloadData]; // 简单地刷新即可
+
+        }
+
     }
+
 }
+
+
 
 - (void)setupViews {
+
     self.view.backgroundColor = [UIColor colorWithRed:247/255.0 green:247/255.0 blue:248/255.0 alpha:1.0]; // #f7f7f8
-    
-    // 顶部导航栏
+
+    // 顶部导航
+
     [self setupHeader];
-    
-    // 聊天消息表格
-    [self setupTableView];
-    
+
+//    // 聊天消息表
+
+//    [self setupTableView];
+
     // 输入区域
     [self setupInputArea];
-    
-    // 思考状态动画视图
-    self.thinkingView = [[ThinkingView alloc] initWithFrame:CGRectZero];
-    self.thinkingView.translatesAutoresizingMaskIntoConstraints = NO;
-    self.thinkingView.hidden = YES;
+
+    // 例如，使用 frame
+
+    self.tableNode.frame = self.view.bounds;
+
+    // 或者使用 Auto Layout 将 tableNode.view 约束到父视图
+
+    _tableNode.view.translatesAutoresizingMaskIntoConstraints = NO;
+
+    [NSLayoutConstraint activateConstraints:@[
+
+    [_tableNode.view.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:44],
+
+    [_tableNode.view.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+
+    [_tableNode.view.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+
+    [_tableNode.view.bottomAnchor constraintEqualToAnchor:self.inputContainerView.topAnchor]
+
+    ]];
+
 }
+
+
 
 - (void)setupHeader {
+
     UIView *headerView = [[UIView alloc] initWithFrame:CGRectZero];
+
     headerView.backgroundColor = [UIColor whiteColor];
+
     headerView.translatesAutoresizingMaskIntoConstraints = NO;
-    
+
     // 添加模糊效果
+
     UIVisualEffectView *blurView = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleExtraLight]];
+
     blurView.translatesAutoresizingMaskIntoConstraints = NO;
+
     [headerView addSubview:blurView];
-    
+
     // 菜单按钮 - 暂时保留但不设置动作
+
     UIButton *menuButton = [UIButton buttonWithType:UIButtonTypeSystem];
+
     [menuButton setImage:[UIImage systemImageNamed:@"line.horizontal.3"] forState:UIControlStateNormal];
+
     menuButton.tintColor = [UIColor blackColor];
+
     menuButton.translatesAutoresizingMaskIntoConstraints = NO;
+
     [headerView addSubview:menuButton];
-    
-    // 标题按钮
+
+    //  题按钮
+
     UIButton *titleButton = [UIButton buttonWithType:UIButtonTypeSystem];
+
     NSString *modelName = [[APIManager sharedManager] currentModelName];
+
     [titleButton setTitle:modelName forState:UIControlStateNormal];
+
     titleButton.titleLabel.font = [UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];
+
     titleButton.tintColor = UIColor.blackColor;
+
     [titleButton addTarget:self action:@selector(showModelSelectionMenu:) forControlEvents:UIControlEventTouchUpInside];
+
     titleButton.translatesAutoresizingMaskIntoConstraints = NO;
+
     [headerView addSubview:titleButton];
-        
+
     // 刷新按钮
+
     UIButton *refreshButton = [UIButton buttonWithType:UIButtonTypeCustom];
+
     [refreshButton setImage:[UIImage systemImageNamed:@"arrow.clockwise"] forState:UIControlStateNormal];
+
     refreshButton.tintColor = [UIColor blackColor];
+
     refreshButton.translatesAutoresizingMaskIntoConstraints = NO;
+
     [refreshButton addTarget:self action:@selector(resetAPIKey) forControlEvents:UIControlEventTouchUpInside];
+
     [headerView addSubview:refreshButton];
-    
+
     // 底部分割线
+
     UIView *separatorLine = [[UIView alloc] initWithFrame:CGRectZero];
+
     separatorLine.backgroundColor = [UIColor colorWithRed:229/255.0 green:229/255.0 blue:229/255.0 alpha:1.0]; // #e5e5e5
+
     separatorLine.translatesAutoresizingMaskIntoConstraints = NO;
+
     [headerView addSubview:separatorLine];
-    
+
     [self.view addSubview:headerView];
-    
+
     // 设置约束
+
     [NSLayoutConstraint activateConstraints:@[
-        [headerView.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
-        [headerView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
-        [headerView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        [headerView.heightAnchor constraintEqualToConstant:44],
-        
-        [blurView.topAnchor constraintEqualToAnchor:headerView.topAnchor],
-        [blurView.leadingAnchor constraintEqualToAnchor:headerView.leadingAnchor],
-        [blurView.trailingAnchor constraintEqualToAnchor:headerView.trailingAnchor],
-        [blurView.bottomAnchor constraintEqualToAnchor:headerView.bottomAnchor],
-        
-        [menuButton.leadingAnchor constraintEqualToAnchor:headerView.leadingAnchor constant:16],
-        [menuButton.centerYAnchor constraintEqualToAnchor:headerView.centerYAnchor],
-        [menuButton.widthAnchor constraintEqualToConstant:24],
-        [menuButton.heightAnchor constraintEqualToConstant:24],
-        
+
+    [headerView.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
+
+    [headerView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+
+    [headerView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+
+    [headerView.heightAnchor constraintEqualToConstant:44],
+
+    [blurView.topAnchor constraintEqualToAnchor:headerView.topAnchor],
+
+    [blurView.leadingAnchor constraintEqualToAnchor:headerView.leadingAnchor],
+
+    [blurView.trailingAnchor constraintEqualToAnchor:headerView.trailingAnchor],
+
+    [blurView.bottomAnchor constraintEqualToAnchor:headerView.bottomAnchor],
+
+    [menuButton.leadingAnchor constraintEqualToAnchor:headerView.leadingAnchor constant:16],
+
+    [menuButton.centerYAnchor constraintEqualToAnchor:headerView.centerYAnchor],
+
+    [menuButton.widthAnchor constraintEqualToConstant:24],
+
+    [menuButton.heightAnchor constraintEqualToConstant:24],
+
+
+
         [titleButton.centerXAnchor constraintEqualToAnchor:headerView.centerXAnchor],
+
         [titleButton.centerYAnchor constraintEqualToAnchor:headerView.centerYAnchor],
-        
-        
+
+
+
+
+
         [refreshButton.trailingAnchor constraintEqualToAnchor:headerView.trailingAnchor constant:-16],
+
         [refreshButton.centerYAnchor constraintEqualToAnchor:headerView.centerYAnchor],
+
         [refreshButton.widthAnchor constraintEqualToConstant:24],
+
         [refreshButton.heightAnchor constraintEqualToConstant:24],
-        
+
+
+
         [separatorLine.leadingAnchor constraintEqualToAnchor:headerView.leadingAnchor],
+
         [separatorLine.trailingAnchor constraintEqualToAnchor:headerView.trailingAnchor],
+
         [separatorLine.bottomAnchor constraintEqualToAnchor:headerView.bottomAnchor],
+
         [separatorLine.heightAnchor constraintEqualToConstant:1]
+
     ]];
+
 }
 
-- (void)setupTableView {
-    self.tableView = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStylePlain];
-    self.tableView.delegate = self;
-    self.tableView.dataSource = self;
-    self.tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
-    self.tableView.backgroundColor = [UIColor colorWithRed:247/255.0 green:247/255.0 blue:248/255.0 alpha:1.0]; // #f7f7f8
-    [self.tableView registerClass:[MessageCell class] forCellReuseIdentifier:@"MessageCell"];
-    self.tableView.translatesAutoresizingMaskIntoConstraints = NO;
-    self.tableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
-    [self.view addSubview:self.tableView];
-    
-    [NSLayoutConstraint activateConstraints:@[
-        [self.tableView.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:44],
-        [self.tableView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
-        [self.tableView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor]
-    ]];
-}
+
 
 - (void)setupInputArea {
+
     // 1. 创建视图
+
     // 容器视图 (阴影层)
+
     self.inputContainerView = [[UIView alloc] init];
+
     self.inputContainerView.backgroundColor = [UIColor clearColor];
+
     self.inputContainerView.translatesAutoresizingMaskIntoConstraints = NO;
+
     self.inputContainerView.layer.shadowColor = [UIColor grayColor].CGColor;
+
     self.inputContainerView.layer.shadowOffset = CGSizeMake(0, -5);
+
     self.inputContainerView.layer.shadowOpacity = 0.2;
+
     self.inputContainerView.layer.shadowRadius = 4.0;
-    
+
+
+
     // 背景视图 (圆角层)
+
     self.inputBackgroundView = [[UIView alloc] init];
+
     self.inputBackgroundView.backgroundColor = [UIColor systemGray6Color]; // 背景色延伸至底部
+
     self.inputBackgroundView.translatesAutoresizingMaskIntoConstraints = NO;
+
     self.inputBackgroundView.layer.cornerRadius = 23.0;
+
     self.inputBackgroundView.layer.maskedCorners = kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner;
+
     self.inputBackgroundView.layer.masksToBounds = YES;
+
     self.inputBackgroundView.userInteractionEnabled = YES;
 
+
+
+    // ====================== 修改：更新 StackView 配置 ======================
+
+    self.thumbnailsStackView = [[UIStackView alloc] init];
+
+    self.thumbnailsStackView.translatesAutoresizingMaskIntoConstraints = NO;
+
+    self.thumbnailsStackView.axis = UILayoutConstraintAxisHorizontal;
+
+    self.thumbnailsStackView.spacing = 8.0;
+
+    // --- 关键修改 ---
+
+    // 不再填充，而是从左到右排列，尊重子视图自身大小
+
+    self.thumbnailsStackView.alignment = UIStackViewAlignmentCenter; // 垂直居中对齐
+
+    self.thumbnailsStackView.clipsToBounds = NO;
+
+    [self.inputBackgroundView addSubview:self.thumbnailsStackView];
+
+
+
     // 文本输入视图
+
     self.inputTextView = [[UITextView alloc] init];
+
     self.inputTextView.font = [UIFont systemFontOfSize:18];
+
     self.inputTextView.delegate = self;
+
     self.inputTextView.scrollEnabled = YES;
+
     self.inputTextView.backgroundColor = [UIColor clearColor];
+
     self.inputTextView.textContainerInset = UIEdgeInsetsMake(8, 8, 8, 8);
+
     self.inputTextView.translatesAutoresizingMaskIntoConstraints = NO;
-    
-    // 占位符标签
-    self.placeholderLabel = [[UILabel alloc] init];
-    self.placeholderLabel.text = @"  给ChatGPT发送信息";
-    self.placeholderLabel.textColor = [UIColor lightGrayColor];
-    self.placeholderLabel.font = [UIFont systemFontOfSize:18];
-    self.placeholderLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    
-    // 工具栏
-    UIView *toolbarView = [[UIView alloc] init];
-    toolbarView.backgroundColor = [UIColor clearColor];
-    toolbarView.translatesAutoresizingMaskIntoConstraints = NO;
-    
-    // 添加按钮
-    self.addButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    [self.addButton setImage:[UIImage systemImageNamed:@"plus.circle"] forState:UIControlStateNormal];
-    self.addButton.tintColor = [UIColor blackColor];
-    [self.addButton addTarget:self action:@selector(addButtonTapped:) forControlEvents:UIControlEventTouchUpInside];
-    self.addButton.translatesAutoresizingMaskIntoConstraints = NO;
-    
-    // 发送按钮
-    self.sendButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    [self.sendButton setImage:[UIImage systemImageNamed:@"arrow.up.circle.fill"] forState:UIControlStateNormal];
-    self.sendButton.tintColor = [UIColor blackColor];
-    [self.sendButton addTarget:self action:@selector(sendButtonTapped) forControlEvents:UIControlEventTouchUpInside];
-    self.sendButton.translatesAutoresizingMaskIntoConstraints = NO;
-    
-    // 2. 添加视图层级
-    [self.view addSubview:self.inputContainerView];
-    [self.inputContainerView addSubview:self.inputBackgroundView];
-    [self.inputContainerView addSubview:toolbarView];
+
     [self.inputBackgroundView addSubview:self.inputTextView];
+
+
+
+    //  占位 签
+
+    self.placeholderLabel = [[UILabel alloc] init];
+
+    self.placeholderLabel.text = @"  给ChatGPT发送信息";
+
+    self.placeholderLabel.textColor = [UIColor lightGrayColor];
+
+    self.placeholderLabel.font = [UIFont systemFontOfSize:18];
+
+    self.placeholderLabel.translatesAutoresizingMaskIntoConstraints = NO;
+
+
+
+    // 工具
+
+    UIView *toolbarView = [[UIView alloc] init];
+
+    toolbarView.backgroundColor = [UIColor clearColor];
+
+    toolbarView.translatesAutoresizingMaskIntoConstraints = NO;
+
+    [self.inputBackgroundView addSubview:toolbarView];
+
+
+
+    // 添加按钮
+
+    self.addButton = [UIButton buttonWithType:UIButtonTypeSystem];
+
+    [self.addButton setImage:[UIImage systemImageNamed:@"plus.circle"] forState:UIControlStateNormal];
+
+    self.addButton.tintColor = [UIColor blackColor];
+
+    [self.addButton addTarget:self action:@selector(addButtonTapped:) forControlEvents:UIControlEventTouchUpInside];
+
+    self.addButton.translatesAutoresizingMaskIntoConstraints = NO;
+
+
+
+    // 发送按钮
+
+    self.sendButton = [UIButton buttonWithType:UIButtonTypeSystem];
+
+    [self.sendButton setImage:[UIImage systemImageNamed:@"arrow.up.circle.fill"] forState:UIControlStateNormal];
+
+    self.sendButton.tintColor = [UIColor blackColor];
+
+    [self.sendButton addTarget:self action:@selector(sendButtonTapped) forControlEvents:UIControlEventTouchUpInside];
+
+    self.sendButton.translatesAutoresizingMaskIntoConstraints = NO;
+
+
+
+    // 2. 添加视图层级
+
+    [self.view addSubview:self.inputContainerView];
+
+    [self.inputContainerView addSubview:self.inputBackgroundView];
+
+    //[self.inputContainerView addSubview:toolbarView];
+
+    //[self.inputBackgroundView addSubview:self.inputTextView];
+
     [self.inputBackgroundView addSubview:self.placeholderLabel];
+
     [toolbarView addSubview:self.addButton];
+
     [toolbarView addSubview:self.sendButton];
-    
+
+
+
     // 3. 激活所有约束
+
     // 将高度约束保存为属性，以便后续动态修改
+
     self.inputTextViewHeightConstraint = [self.inputTextView.heightAnchor constraintEqualToConstant:36]; // 初始高度
-    
+
+
+
     // --- 修改点 1: 让容器的底部对齐到屏幕的真正底部，而不是安全区 ---
+
     self.inputContainerBottomConstraint = [self.inputContainerView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor];
-    
+
+
+
     [NSLayoutConstraint activateConstraints:@[
-        // --- TableView 与 InputContainer 的连接 ---
-        [self.tableView.bottomAnchor constraintEqualToAnchor:self.inputContainerView.topAnchor],
-        
+
         // --- 整体输入容器 (inputContainerView) ---
+
         self.inputContainerBottomConstraint, // 已修改为对齐 self.view.bottomAnchor
+
         [self.inputContainerView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+
         [self.inputContainerView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        
+
+
+
         // --- 背景视图 (inputBackgroundView) ---
+
         [self.inputBackgroundView.topAnchor constraintEqualToAnchor:self.inputContainerView.topAnchor],
+
         [self.inputBackgroundView.leadingAnchor constraintEqualToAnchor:self.inputContainerView.leadingAnchor],
+
         [self.inputBackgroundView.trailingAnchor constraintEqualToAnchor:self.inputContainerView.trailingAnchor],
+
         [self.inputBackgroundView.bottomAnchor constraintEqualToAnchor:self.inputContainerView.bottomAnchor],
-        
-        // --- 工具栏 (toolbarView) ---
-        [toolbarView.topAnchor constraintEqualToAnchor:self.inputContainerView.topAnchor constant:15],
-        [toolbarView.trailingAnchor constraintEqualToAnchor:self.inputContainerView.trailingAnchor constant:-12],
-        // --- 修改点 2: 工具栏的底部对齐到容器的 *安全区域* 底部 ---
-        [toolbarView.bottomAnchor constraintEqualToAnchor:self.inputContainerView.safeAreaLayoutGuide.bottomAnchor constant:-15],
-        [toolbarView.widthAnchor constraintEqualToConstant:100],
-        
-        // --- 添加按钮 (addButton) ---
-        [self.addButton.leadingAnchor constraintEqualToAnchor:toolbarView.leadingAnchor constant:8],
-        [self.addButton.centerYAnchor constraintEqualToAnchor:toolbarView.centerYAnchor],
-        [self.addButton.widthAnchor constraintEqualToConstant:46],
-        [self.addButton.heightAnchor constraintEqualToConstant:46],
-        
-        // --- 发送按钮 (sendButton) ---
-        [self.sendButton.trailingAnchor constraintEqualToAnchor:toolbarView.trailingAnchor constant:-8],
-        [self.sendButton.centerYAnchor constraintEqualToAnchor:toolbarView.centerYAnchor],
-        [self.sendButton.widthAnchor constraintEqualToConstant:46],
-        [self.sendButton.heightAnchor constraintEqualToConstant:46],
-        
-        // --- 文本输入框 (inputTextView) ---
-        self.inputTextViewHeightConstraint,
-        [self.inputTextView.topAnchor constraintEqualToAnchor:self.inputBackgroundView.topAnchor constant:15],
-        // --- 修改点 3: 输入框的底部也对齐到容器的 *安全区域* 底部 ---
-        [self.inputTextView.bottomAnchor constraintEqualToAnchor:self.inputContainerView.safeAreaLayoutGuide.bottomAnchor constant:-15],
+
+
+
+        // --- 缩略图容器 (thumbnailsStackView) 的约束 ---
+
+        [self.thumbnailsStackView.topAnchor constraintEqualToAnchor:self.inputBackgroundView.topAnchor constant:12],
+
+        [self.thumbnailsStackView.leadingAnchor constraintEqualToAnchor:self.inputBackgroundView.leadingAnchor constant:32],
+
+        [self.thumbnailsStackView.trailingAnchor constraintLessThanOrEqualToAnchor:self.inputBackgroundView.trailingAnchor constant:-20], // 允许右侧有空间
+
+        // **关键：创建高度约束并保存引用，初始值为0**
+
+        (self.thumbnailsContainerHeightConstraint = [self.thumbnailsStackView.heightAnchor constraintEqualToConstant:0]),
+
+
+
+        // --- 文本输入框 (inputTextView) 的约束 ---
+
+        // **关键：它的顶部现在永远依赖于缩略图的底部**
+
+        [self.inputTextView.topAnchor constraintEqualToAnchor:self.thumbnailsStackView.bottomAnchor constant:8],
+
         [self.inputTextView.leadingAnchor constraintEqualToAnchor:self.inputBackgroundView.leadingAnchor constant:20],
+
+        [self.inputTextView.bottomAnchor constraintEqualToAnchor:self.inputContainerView.safeAreaLayoutGuide.bottomAnchor constant:-15],
+
+        self.inputTextViewHeightConstraint, // 这个高度约束依然有效，用于多行文
+
+
+
+        // --- 工具栏 (toolbarView) 的约束 ---
+
+        [toolbarView.trailingAnchor constraintEqualToAnchor:self.inputBackgroundView.trailingAnchor constant:-12],
+
+        [toolbarView.widthAnchor constraintEqualToConstant:100],
+
+        // **关键：让工具栏的中心与输入框的中心保持垂直对齐**
+
+        [toolbarView.centerYAnchor constraintEqualToAnchor:self.inputTextView.centerYAnchor],
+
+        [toolbarView.heightAnchor constraintEqualToAnchor:self.inputTextView.heightAnchor], // 高度也保持一致
+
+
+
+        // --- 添加按钮 (addButton) ---
+
+        [self.addButton.leadingAnchor constraintEqualToAnchor:toolbarView.leadingAnchor constant:8],
+
+        [self.addButton.centerYAnchor constraintEqualToAnchor:toolbarView.centerYAnchor],
+
+        [self.addButton.widthAnchor constraintEqualToConstant:46],
+
+        [self.addButton.heightAnchor constraintEqualToConstant:46],
+
+
+
+        // --- 发送按钮 (sendButton) ---
+
+        [self.sendButton.trailingAnchor constraintEqualToAnchor:toolbarView.trailingAnchor constant:-8],
+
+        [self.sendButton.centerYAnchor constraintEqualToAnchor:toolbarView.centerYAnchor],
+
+        [self.sendButton.widthAnchor constraintEqualToConstant:46],
+
+        [self.sendButton.heightAnchor constraintEqualToConstant:46],
+
+
+
         [self.inputTextView.trailingAnchor constraintEqualToAnchor:toolbarView.leadingAnchor],
-        
-        // --- 占位符 (placeholderLabel) ---
+
+
+
+        // ---  占位 (placeholderLabel) ---
+
+        // 它的约束不变， 为它需要和 textView 精确对齐
+
         [self.placeholderLabel.leadingAnchor constraintEqualToAnchor:self.inputTextView.leadingAnchor constant:5],
+
         [self.placeholderLabel.centerYAnchor constraintEqualToAnchor:self.inputTextView.centerYAnchor]
+
     ]];
+
 }
+
+
 
 - (void)fetchMessages {
+
     self.messages = [[CoreDataManager sharedManager] fetchMessagesForChat:self.chat];
+
     // 如果没有消息，添加一条欢迎消息
+
     if (self.messages.count == 0) {
+
         [[CoreDataManager sharedManager] addMessageToChat:self.chat
+
                                                   content:@"您好！我是ChatGPT，一个AI助手。我可以帮助您解答问题，请问有什么我可以帮您的吗？"
+
                                                isFromUser:NO];
+
         self.messages = [[CoreDataManager sharedManager] fetchMessagesForChat:self.chat];
+
     }
+
 }
 
+
+
 - (void)dealloc {
-    // 停止定时器
-    [self stopTypingAnimation];
-    
+
+    [self stopTypingTimer];
+
     // 移除通知
+
     [[NSNotificationCenter defaultCenter] removeObserver:self];
-    
+
+
+
     // 确保任务被取消
+
     if (self.currentStreamingTask) {
+
         [[APIManager sharedManager] cancelStreamingTask:self.currentStreamingTask];
+
         self.currentStreamingTask = nil;
+
     }
+
 }
+
+
 
 #pragma mark - Keyboard Handling
 
+
+
 - (void)keyboardWillShow:(NSNotification *)notification {
-    // 监听键盘的最终位置和大小
+
+    // 监控键盘的最终位置和大小
+
     CGRect keyboardFrame = [notification.userInfo[UIKeyboardFrameEndUserInfoKey] CGRectValue];
+
     // 键盘动画的持续时间
+
     NSTimeInterval duration = [notification.userInfo[UIKeyboardAnimationDurationUserInfoKey] doubleValue];
+
     // 键盘动画的曲线类型（如缓入缓出）
+
     UIViewAnimationCurve curve = [notification.userInfo[UIKeyboardAnimationCurveUserInfoKey] integerValue];
-    
+
+
+
     [UIView animateWithDuration:duration delay:0 options:(curve << 16) animations:^{
+
         self.inputContainerBottomConstraint.constant = -keyboardFrame.size.height;
+
         [self.view layoutIfNeeded];
+
         [self scrollToBottom];
+
     } completion:nil];
+
 }
 
+
+
 - (void)keyboardWillHide:(NSNotification *)notification {
+
     NSTimeInterval duration = [notification.userInfo[UIKeyboardAnimationDurationUserInfoKey] doubleValue];
+
     UIViewAnimationCurve curve = [notification.userInfo[UIKeyboardAnimationCurveUserInfoKey] integerValue];
-    
+
+
+
     [UIView animateWithDuration:duration delay:0 options:(curve << 16) animations:^{
+
         self.inputContainerBottomConstraint.constant = 0;
+
         [self.view layoutIfNeeded];
+
     } completion:nil];
+
 }
+
+
 
 #pragma mark - Message Handling
 
+
+
 - (void)addButtonTapped:(UIButton *)sender {
+
     CustomMenuView *menuView = [[CustomMenuView alloc] initWithFrame:self.view.bounds];
-    
-    // 将按钮的中心点从其父视图的坐标系转换到 self.view 的坐标系
+
+
+
+    // 将按钮的中心点从其父视图的坐标系换到 self.view 的坐标系
+
     CGPoint centerPositionInSelfView = [sender.superview convertPoint:sender.center toView:self.view];
+
     menuView.delegate = self;
+
     [menuView showInView:self.view atPoint:CGPointMake(centerPositionInSelfView.x + 12, centerPositionInSelfView.y - 15)];
+
 }
+
+
 
 - (void)sendButtonTapped {
-    if (self.inputTextView.text.length == 0) {
-        return;
-    }
-    
-    // 获取用户消息
+
+    if (self.inputTextView.text.length == 0) return;
+
+
+
     NSString *userMessage = [self.inputTextView.text copy];
-    
-    // 清空输入框 (在添加消息前清空，减少UI操作间隔)
+
     self.inputTextView.text = @"";
-    self.placeholderLabel.hidden = NO;
-    self.inputTextViewHeightConstraint.constant = 40;
-    [self.view layoutIfNeeded]; // 立即更新输入框布局
-    
-    // 隐藏键盘
+
+    [self textViewDidChange:self.inputTextView]; // 触发输入框高度更新
+
     [self.inputTextView resignFirstResponder];
-    
-    // 添加用户消息（内部包含滚动到底部）
-    [self addMessageWithText:userMessage isFromUser:YES];
-    
-    // 确保滚动到底部，准备显示思考状态
-    [self scrollToBottomImmediate];
-    
-    // 使用短延迟确保消息显示后再开始AI响应
-    // 这样可以分离两个操作，减少同时进行的视觉更新
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        // 开始AI响应
+
+
+
+    // --- FIX: 使用回调的方法，确保时序正确 ---
+
+    [self addMessageWithText:userMessage isFromUser:YES completion:^{
+
+        // 在用户消息插入动画完成后，再开始AI响应
+
         [self simulateAIResponse];
-    });
+
+    }];
+
 }
 
-- (void)showThinkingStatus {
-    self.isThinking = YES;
-    
-    // 移除旧的思考视图，如果有的话
-    for (UIView *subview in self.tableView.subviews) {
-        if ([subview isKindOfClass:[ThinkingView class]]) {
-            [subview removeFromSuperview];
-        }
+
+
+
+
+- (NSInteger)tableNode:(ASTableNode *)tableNode numberOfRowsInSection:(NSInteger)section {
+
+    // --- FIX: 正确的行数计算 ---
+
+    // 如果正在思考，总行数 = 消息数 + 1 (用于ThinkingNode)
+
+    return self.messages.count + (self.isAIThinking ? 1 : 0);
+
+}
+
+
+
+- (ASCellNodeBlock)tableNode:(ASTableNode *)tableNode nodeBlockForRowAtIndexPath:(NSIndexPath *)indexPath {
+
+    // --- FIX:  根据indexPath和isAIThinking状态，返回正确的节点 ---
+
+
+
+    // 检查当前行是否应该是 ThinkingNode
+
+    if (self.isAIThinking && indexPath.row == self.messages.count) {
+
+        return ^{
+
+            return [[ThinkingNode alloc] init];
+
+        };
+
     }
-    
-    // 先滚动到底部
-    [self scrollToBottomImmediate];
-    
-    // 创建思考视图
-    self.thinkingView = [[ThinkingView alloc] initWithFrame:CGRectZero];
-    self.thinkingView.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.tableView addSubview:self.thinkingView];
-    
-    // 计算位置 - 在tableView内容的底部
-    CGFloat bottomPadding = 10.0f;
-    CGFloat contentHeight = self.tableView.contentSize.height;
-    
-    // 使用自动布局约束固定思考视图的位置
-    [NSLayoutConstraint activateConstraints:@[
-        [self.thinkingView.leadingAnchor constraintEqualToAnchor:self.tableView.leadingAnchor constant:16],
-        [self.thinkingView.topAnchor constraintEqualToAnchor:self.tableView.contentLayoutGuide.topAnchor constant:contentHeight + bottomPadding],
-        [self.thinkingView.widthAnchor constraintEqualToConstant:100],
-        [self.thinkingView.heightAnchor constraintEqualToConstant:40]
-    ]];
-    
-    // 开始动画
-    [self.thinkingView startAnimating];
-    
-    // 调整tableView内容大小，确保思考视图可见
-    CGFloat extraSpace = 60; // 额外空间
-    CGFloat newContentHeight = contentHeight + self.thinkingView.frame.size.height + extraSpace;
-    
-    // 为tableView添加额外的内容高度
-    UIEdgeInsets contentInset = self.tableView.contentInset;
-    contentInset.bottom = self.thinkingView.frame.size.height + extraSpace;
-    self.tableView.contentInset = contentInset;
-    
-    // 确保滚动到包含思考视图的位置
-    CGPoint bottomOffset = CGPointMake(0, newContentHeight - self.tableView.bounds.size.height + self.tableView.contentInset.bottom);
-    [self.tableView setContentOffset:bottomOffset animated:NO];
+
+
+
+    // 否则，正常显示消息节点
+
+    NSManagedObject *messageObject = self.messages[indexPath.row];
+
+    NSString *content = [messageObject valueForKey:@"content"];
+
+    BOOL isFromUser = [[messageObject valueForKey:@"isFromUser"] boolValue];
+
+
+
+    return ^{
+
+        MessageCellNode *node = [[MessageCellNode alloc] initWithMessage:content isFromUser:isFromUser];
+
+        return node;
+
+    };
+
 }
 
-- (void)hideThinkingStatus {
-    self.isThinking = NO;
-    [self.thinkingView stopAnimating];
-    [self.thinkingView removeFromSuperview];
-    
-    // 恢复tableView的内容偏移
-    UIEdgeInsets contentInset = self.tableView.contentInset;
-    contentInset.bottom = 0;
-    self.tableView.contentInset = contentInset;
-    
-    // 确保滚动到底部
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [self scrollToBottomImmediate];
-    });
-}
+
 
 - (void)scrollToBottom {
+
     if (self.messages.count > 0) {
-        // 使用延迟确保在tableView完成重新加载数据后再滚动
-        dispatch_async(dispatch_get_main_queue(), ^{
-            NSIndexPath *lastIndexPath = [NSIndexPath indexPathForRow:self.messages.count - 1 inSection:0];
-            
-            // 获取表格当前内容高度与可见区域的差值，判断是跳跃式滚动还是平滑滚动
-            CGFloat contentHeight = self.tableView.contentSize.height;
-            CGFloat visibleHeight = self.tableView.bounds.size.height;
-            CGFloat currentOffset = self.tableView.contentOffset.y;
-            CGFloat bottomOffset = contentHeight - visibleHeight;
-            CGFloat distanceFromBottom = bottomOffset - currentOffset;
-            
-//            // 如果已经接近底部，使用平滑动画
-//            if (distanceFromBottom < 100) {
-//                [self.tableView scrollToRowAtIndexPath:lastIndexPath 
-//                                     atScrollPosition:UITableViewScrollPositionBottom 
-//                                             animated:YES];
-//            } else {
-                // 否则使用无动画跳转，避免长距离滚动带来的延迟感
-            [self.tableView scrollToRowAtIndexPath:lastIndexPath
-                                 atScrollPosition:UITableViewScrollPositionBottom
-                                         animated:NO];
-           // }
-        });
-    }
+
+            dispatch_async(dispatch_get_main_queue(), ^{
+
+                NSIndexPath *lastIndexPath = [NSIndexPath indexPathForRow:self.messages.count - 1 inSection:0];
+
+                // --- 修改 ---
+
+                [self.tableNode scrollToRowAtIndexPath:lastIndexPath atScrollPosition:UITableViewScrollPositionBottom animated:YES];
+
+            });
+
+        }
+
 }
 
-// 立即滚动到底部，无动画
+
+
+// 立即滚动到底部， 动画
+
 - (void)scrollToBottomImmediate {
+
     if (self.messages.count > 0) {
+
         NSIndexPath *lastIndexPath = [NSIndexPath indexPathForRow:self.messages.count - 1 inSection:0];
-        [self.tableView scrollToRowAtIndexPath:lastIndexPath atScrollPosition:UITableViewScrollPositionBottom animated:NO];
+
+        // --- 修改 ---
+
+        [self.tableNode scrollToRowAtIndexPath:lastIndexPath atScrollPosition:UITableViewScrollPositionBottom animated:NO];
+
+
+
     }
+
 }
+
+
+
+// 这是一个 核心方法，用于 据数据刷新UI
+
+// ChatDetailViewController.m
+
+
+
+// 这个方法现在用来控制单个缩略图的显示和隐藏
+
+- (void)updateAttachmentsDisplay {
+
+    BOOL hasAttachments = self.selectedAttachments.count > 0;
+
+
+
+    // 1. 先清空所有旧的缩略图
+
+    for (UIView *view in self.thumbnailsStackView.arrangedSubviews) {
+
+        [self.thumbnailsStackView removeArrangedSubview:view];
+
+        [view removeFromSuperview];
+
+    }
+
+
+
+    // 2. 重新创建并添加新的缩略图 (最多3个)
+
+    NSInteger thumbnailCount = MIN(self.selectedAttachments.count, 3);
+
+    for (NSInteger i = 0; i < thumbnailCount; i++) {
+
+        id attachment = self.selectedAttachments[i];
+
+
+
+        AttachmentThumbnailView *thumbnailView = [[AttachmentThumbnailView alloc] init];
+
+        thumbnailView.tag = i;
+
+
+
+        // --- 关键新增：为每个缩略图添加固定宽度约束 ---
+
+        [thumbnailView.widthAnchor constraintEqualToConstant:60].active = YES;
+
+        // 高度会自动由 StackView 的高度和 alignment 属性决定，这里 需再
+
+
+
+        // --- 配置 除按钮的回调 ---
+
+        __weak typeof(self) weakSelf = self;
+
+        thumbnailView.deleteAction = ^{
+
+            [weakSelf deleteAttachmentAtIndex:thumbnailView.tag];
+
+        };
+
+
+
+        // --- 配置显示的图片 ---
+
+        if ([attachment isKindOfClass:[UIImage class]]) {
+
+            thumbnailView.imageView.image = attachment;
+
+        } else if ([attachment isKindOfClass:[NSURL class]]) {
+
+            [self generateThumbnailForURL:attachment completion:^(UIImage * _Nullable image) {
+
+                thumbnailView.imageView.image = image ?: [UIImage systemImageNamed:@"doc.fill"];
+
+            }];
+
+        }
+
+
+
+        [self.thumbnailsStackView addArrangedSubview:thumbnailView];
+
+    }
+
+
+
+    // 3. 用动画来“撑开”或“收起”空间
+
+    CGFloat newHeight = hasAttachments ? 60.0 : 0.0;
+
+    CGFloat newPadding = hasAttachments ? 8.0 : 0.0;
+
+
+
+    if (self.thumbnailsContainerHeightConstraint.constant != newHeight) {
+
+        [self.view layoutIfNeeded]; // 确保当前布局是最新的
+
+        [UIView animateWithDuration:0.3 animations:^{
+
+            self.thumbnailsContainerHeightConstraint.constant = newHeight;
+
+            // 找到 inputTextView 的顶部约束并更新 constant
+
+            for (NSLayoutConstraint *constraint in self.inputBackgroundView.constraints) {
+
+                if (constraint.firstItem == self.inputTextView && constraint.firstAttribute == NSLayoutAttributeTop) {
+
+                    constraint.constant = newPadding;
+
+                    break;
+
+                }
+
+            }
+
+            [self.view layoutIfNeeded]; // 在动画块中执行布局
+
+        }];
+
+    }
+
+}
+
+
+
+- (void)deleteAttachmentAtIndex:(NSInteger)index {
+
+    // 安全检查，确保索引有效
+
+    if (index >= self.selectedAttachments.count) {
+
+        return;
+
+    }
+
+
+
+    // 获取对应的缩略图视图
+
+    AttachmentThumbnailView *thumbnailToRemove = nil;
+
+    for (UIView *view in self.thumbnailsStackView.arrangedSubviews) {
+
+        if ([view isKindOfClass:[AttachmentThumbnailView class]] && view.tag == index) {
+
+            thumbnailToRemove = (AttachmentThumbnailView *)view;
+
+            break;
+
+        }
+
+    }
+
+
+
+    // 如果找不到对应的视图，直接刷新UI后返回
+
+    if (!thumbnailToRemove) {
+
+        [self.selectedAttachments removeObjectAtIndex:index];
+
+        [self updateAttachmentsDisplay]; // 使用完整刷新作为后备方案
+
+        return;
+
+    }
+
+
+
+    // 从数据源中 除
+
+    [self.selectedAttachments removeObjectAtIndex:index];
+
+
+
+    // 判断是否是最后一个附件
+
+    if (self.selectedAttachments.count == 0) {
+
+        // --- 是最后一个，执行淡出 + 收起容器的两步动画 ---
+
+        [UIView animateWithDuration:0.2 animations:^{
+
+            thumbnailToRemove.alpha = 0;
+
+        } completion:^(BOOL finished) {
+
+            [self.thumbnailsStackView removeArrangedSubview:thumbnailToRemove];
+
+            [thumbnailToRemove removeFromSuperview];
+
+
+
+            // 此时附件数组已空，调用此方法会触发收起容器的动画
+
+            [self updateAttachmentsDisplay];
+
+        }];
+
+
+
+    } else {
+
+        // ---【新的修改】不是最后一个，让其立即消失，并让StackView处理其余视图的移动动画 ---
+
+
+
+        // 我将视图的移除操作放到一个动画块中。
+
+        // 这不会给被移除的视图自身添加动画，但会触发 UIStackView 对其布局的改变产生动画，
+
+        // 从而使其他视图平滑移动。
+
+        [UIView animateWithDuration:0.25 animations:^{
+
+            // 视图立即从StackView中移除
+
+            [self.thumbnailsStackView removeArrangedSubview:thumbnailToRemove];
+
+            [thumbnailToRemove removeFromSuperview];
+
+        } completion:^(BOOL finished) {
+
+            // 动画结束后，更新剩余视图的tag，以确保它与数据源中的新索引保持一致
+
+            for (NSInteger i = 0; i < self.thumbnailsStackView.arrangedSubviews.count; i++) {
+
+                UIView *view = self.thumbnailsStackView.arrangedSubviews[i];
+
+                view.tag = i;
+
+            }
+
+        }];
+
+    }
+
+}
+
+
+
+
+
+// 异步从文件URL生成缩略图的辅助方法
+
+- (void)generateThumbnailForURL:(NSURL *)url completion:(void (^)(UIImage * _Nullable image))completion {
+
+    CGFloat scale = [UIScreen mainScreen].scale;
+
+    CGSize size = CGSizeMake(120, 120); // 请求一个稍大尺寸的缩略图以保证清晰度
+
+
+
+    QLThumbnailGenerationRequest *request = [[QLThumbnailGenerationRequest alloc] initWithFileAtURL:url size:size scale:scale representationTypes:QLThumbnailGenerationRequestRepresentationTypeAll];
+
+
+
+    [[QLThumbnailGenerator sharedGenerator] generateBestRepresentationForRequest:request completionHandler:^(QLThumbnailRepresentation * _Nullable thumbnail, NSError * _Nullable error) {
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+
+            if (completion) {
+
+                completion(thumbnail.UIImage);
+
+            }
+
+        });
+
+    }];
+
+}
+
+
+
+
+
+
 
 #pragma mark - CustomMenuViewDelegate
+
 // 3. 实现菜单的代理方法
+
 - (void)customMenuViewDidSelectItemAtIndex:(NSInteger)index {
+
     switch (index) {
+
         case 0: // 照片
+
             [self.mediaPickerManager presentPhotoPicker];
+
             break;
+
         case 1: // 摄像头
+
             [self.mediaPickerManager presentCameraPicker];
+
             break;
+
         case 2: // 文件
+
             [self.mediaPickerManager presentFilePicker];
+
             break;
+
     }
+
 }
+
+
 
 // 4. 实现新的、简洁的代理方法
+
 #pragma mark - MediaPickerManagerDelegate
 
+
+
 - (void)mediaPicker:(MediaPickerManager *)picker didPickImages:(NSArray<UIImage *> *)images {
-    NSLog(@"[ViewController] 成功收到了 %ld 张图片", images.count);
-    
-    // 在这里处理图片
-    // 例如：将图片添加到消息中，或者上传到服务器
-    // self.inputTextView.text = [NSString stringWithFormat:@"已选择 %ld 张图片", images.count];
+
+    // 遍历选中的图片，添加到附件数组，直到达到上限
+
+    for (UIImage *image in images) {
+
+        if (self.selectedAttachments.count < 3) {
+
+            [self.selectedAttachments addObject:image];
+
+        } else {
+
+            // 可选：在这里给用户一个提示，如 "最多只能添加3个附件"
+
+            NSLog(@"已达到附件数量上限");
+
+            break;
+
+        }
+
+    }
+
+    [self updateAttachmentsDisplay];
+
 }
+
+
 
 - (void)mediaPicker:(MediaPickerManager *)picker didPickDocumentAtURL:(NSURL *)url {
-    NSLog(@"[ViewController] 成功收到了文件: %@", url.lastPathComponent);
-    
-    // 在这里处理文件
-    // self.inputTextView.text = [NSString stringWithFormat:@"已选择文件: %@", url.lastPathComponent];
-}
 
-- (void)mediaPickerDidCancel:(MediaPickerManager *)picker {
-    NSLog(@"[ViewController] 用户取消了选择");
-}
+    // 替换掉当前已有的附件
 
+    if (self.selectedAttachments.count < 3) {
 
-#pragma mark - UITableViewDataSource
+        [self.selectedAttachments addObject:url];
 
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return self.messages.count;
-}
+    } else {
 
-- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    MessageCell *cell = [tableView dequeueReusableCellWithIdentifier:@"MessageCell" forIndexPath:indexPath];
-    
-    NSManagedObject *message = self.messages[indexPath.row];
-    NSString *content = [message valueForKey:@"content"];
-    BOOL isFromUser = [[message valueForKey:@"isFromUser"] boolValue];
-    [cell configureWithMessage:content isFromUser:isFromUser];
-    
-    return cell;
-}
+        NSLog(@"已达到附件数量上限");
 
-#pragma mark - UITableViewDelegate
-
-- (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
-    NSManagedObject *message = self.messages[indexPath.row];
-    NSString *content = [message valueForKey:@"content"];
-    BOOL isFromUser = [[message valueForKey:@"isFromUser"] boolValue];
-    
-    // 获取基础高度
-    CGFloat baseHeight = [MessageCell heightForMessage:content width:tableView.bounds.size.width];
-    
-    // 对AI生成的长内容提供更多空间
-    if (!isFromUser && content.length > 200) {
-        // 针对长文本，额外增加内容长度相关的高度
-        CGFloat extraHeight = MIN(40, content.length / 100 * 5); // 每100字符最多增加5pt，但不超过40pt
-        return baseHeight + extraHeight;
     }
-    
-    // 普通消息使用基础高度即可
-    return baseHeight;
+
+    [self updateAttachmentsDisplay];
+
 }
+
+
+
+
+
+
 
 #pragma mark - UITextViewDelegate
 
+
+
 - (void)textViewDidChange:(UITextView *)textView {
-    // 更新占位符状态
+
+    // 更新 位状态
+
     [self updatePlaceholderVisibility];
-    
+
+
+
     // 动态调整输入框高度
+
     CGSize size = [textView sizeThatFits:CGSizeMake(textView.bounds.size.width, MAXFLOAT)];
+
     CGFloat newHeight = MIN(MAX(size.height, 36), 120);
-    
+
+
+
     // 只有当高度变化时才更新约束
+
     if (self.inputTextViewHeightConstraint.constant != newHeight) {
+
         self.inputTextViewHeightConstraint.constant = newHeight;
+
         [self.view layoutIfNeeded];
+
         [self scrollToBottom]; // 确保滚动到底部
+
     }
+
 }
+
+
 
 - (void)updatePlaceholderVisibility {
-    // 根据输入文本长度更新占位符可见性
+
+    //  据输入文本长度更新 位可见性
+
     self.placeholderLabel.hidden = self.inputTextView.text.length > 0;
+
 }
+
+
 
 - (BOOL)textView:(UITextView *)textView shouldChangeTextInRange:(NSRange)range replacementText:(NSString *)text {
+
     if ([text isEqualToString:@"\n"] && textView.text.length == 0) {
+
         return NO;
+
     }
+
     return YES;
+
 }
 
+// 核心逻辑：AI响应与打字机动画 (已修复单次响应重复问题)
 - (void)simulateAIResponse {
-    // 如果已有任务在进行，先取消
+    // 1. 重置所有相关状态
+    [self stopTypingTimer];
     if (self.currentStreamingTask) {
         [[APIManager sharedManager] cancelStreamingTask:self.currentStreamingTask];
-        self.currentStreamingTask = nil;
     }
-    
-    // 停止当前的打字动画并清空缓冲区
-    [self stopTypingAnimation];
-    [self.typingBuffer setString:@""];
-    
-    // 显示思考状态
-    [self showThinkingStatus];
-    
-    // 重置上一次的回复内容
-    self.lastResponseContent = @"";
-    
-    // 构建消息历史记录
-    NSMutableArray *messages = [NSMutableArray array];
-    
-    // 添加系统提示
-    [messages addObject:@{
-        @"role": @"system",
-        @"content": [APIManager sharedManager].defaultSystemPrompt
+    [self.fullResponseBuffer setString:@""];
+    self.currentUpdatingAIMessage = nil;
+    self.currentUpdatingAINode = nil;
+    self.displayedTextLength = 0;
+
+    // 2. 显示"Thinking"状态
+    // 步骤 1: 设置状态并计算出“思考视图”将要被插入的位置
+    self.isAIThinking = YES;
+    NSIndexPath *thinkingIndexPath = [NSIndexPath indexPathForRow:self.messages.count inSection:0];
+
+    // 步骤 2: 执行带动画的UI更新，插入“思考视图”所在的行
+    [self.tableNode performBatchUpdates:^{
+        // 在这个 block 内部，我们告诉 tableNode 在计算好的位置插入一个新行
+        [self.tableNode insertRowsAtIndexPaths:@[thinkingIndexPath] withRowAnimation:UITableViewRowAnimationFade];
+    } completion:^(BOOL finished) {
+        // 步骤 3: 在插入动画完成【之后】，执行此处的代码
+        if (finished) {
+            //【核心】命令 tableNode 滚动到刚刚插入的“思考视图”那一行
+            [self.tableNode scrollToRowAtIndexPath:thinkingIndexPath
+                                  atScrollPosition:UITableViewScrollPositionBottom
+                                          animated:YES];
+        }
     }];
-    
-    // 添加历史消息（最多4轮对话）
-    NSInteger messageCount = self.messages.count;
-    NSInteger startIndex = MAX(0, messageCount - 8); // 最多取最近8条消息(4轮对话)
-    
-    for (NSInteger i = startIndex; i < messageCount; i++) {
-        NSManagedObject *message = self.messages[i];
-        NSString *content = [message valueForKey:@"content"];
-        BOOL isFromUser = [[message valueForKey:@"isFromUser"] boolValue];
-        
-        [messages addObject:@{
-            @"role": isFromUser ? @"user" : @"assistant",
-            @"content": content
-        }];
-    }
-    
-    // 使用 API 进行请求，并保存任务对象
-    self.currentStreamingTask = [[APIManager sharedManager] streamingChatCompletionWithMessages:messages
-                                                                                         images:nil
-                                                                                 streamCallback:^(NSString *partialResponse, BOOL isDone, NSError *error) {
-//    self.currentStreamingTask = [[APIManager sharedManager] streamingChatCompletionWithMessages:messages
-//                                                                               streamCallback:^(NSString *partialResponse, BOOL isDone, NSError *error) {
-        if (error) {
-            // 处理错误
-            [self hideThinkingStatus];
+    // 3. 构建历史消息并发起API请求
+    NSMutableArray *messages = [self buildMessageHistory];
+    __weak typeof(self) weakSelf = self;
+
+    self.currentStreamingTask = [[APIManager sharedManager] streamingChatCompletionWithMessages:messages images:nil streamCallback:^(NSString *partialResponse, BOOL isDone, NSError *error) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) { return; }
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (error) {
+                if (error.code != NSURLErrorCancelled) {
+                     NSLog(@"API Error: %@", error.localizedDescription);
+                }
+                strongSelf.isAIThinking = NO;
+                [strongSelf.tableNode performBatchUpdates:^{
+                    [strongSelf.tableNode deleteRowsAtIndexPaths:@[thinkingIndexPath] withRowAnimation:UITableViewRowAnimationFade];
+                } completion:nil];
+                [strongSelf stopTypingTimer];
+                return;
+            }
             
-            // 显示错误消息
-            NSString *errorMessage = [NSString stringWithFormat:@"API 错误: %@", error.localizedDescription];
-            [self addMessageWithText:errorMessage isFromUser:NO];
-            self.currentStreamingTask = nil; // 清理任务引用
-            self.currentUpdatingAIMessage = nil; // 清理AI消息引用
-            self.lastResponseContent = @""; // 重置
-            [self stopTypingAnimation]; // 停止打字动画
-            [self.typingBuffer setString:@""]; // 清空缓冲区
-            return;
-        }
-        
-        // 计算增量内容
-        NSString *incrementalContent = @"";
-        if (partialResponse.length >= self.lastResponseContent.length) {
-            incrementalContent = [partialResponse substringFromIndex:self.lastResponseContent.length];
-            // 更新上一次的内容
-            self.lastResponseContent = [partialResponse copy];
-        } else {
-            // 异常情况：新内容比旧内容短，直接使用新内容
-            incrementalContent = partialResponse;
-            self.lastResponseContent = [partialResponse copy];
-        }
-        
-        if (isDone) {
-            // 完成响应
-            [self hideThinkingStatus];
-            
-            // partialResponse为AI 响应的最新片段
-            if (self.currentUpdatingAIMessage && partialResponse) {
-                // 确保全部内容已添加到缓冲区
-                if (![partialResponse isEqualToString:self.lastResponseContent]) {
-                    incrementalContent = [partialResponse substringFromIndex:self.lastResponseContent.length];
-                    if (incrementalContent.length > 0) {
-                        [self addTextToTypingBuffer:incrementalContent];
+            // 4. 【核心修正】用最新返回的完整文本直接覆盖缓冲区
+            [strongSelf.fullResponseBuffer setString:partialResponse];
+
+            // 5. 核心UI更新逻辑
+            if (strongSelf.isAIThinking) {
+                // --- 这是第一次收到数据 ---
+                strongSelf.isAIThinking = NO;
+
+                // a. 在数据源中创建AI消息记录 (初始内容为空)
+                strongSelf.currentUpdatingAIMessage = [[CoreDataManager sharedManager] addMessageToChat:strongSelf.chat content:@"" isFromUser:NO];
+                [strongSelf fetchMessages]; // 重新加载数据源
+
+                NSIndexPath *finalMessagePath = [NSIndexPath indexPathForRow:strongSelf.messages.count - 1 inSection:0];
+
+                // b. 替换"Thinking"节点为真实的消息节点
+                [strongSelf.tableNode performBatchUpdates:^{
+                    [strongSelf.tableNode deleteRowsAtIndexPaths:@[thinkingIndexPath] withRowAnimation:UITableViewRowAnimationNone];
+                    [strongSelf.tableNode insertRowsAtIndexPaths:@[finalMessagePath] withRowAnimation:UITableViewRowAnimationFade];
+                } completion:^(BOOL finished) {
+                    if(finished) {
+                        // c. 获取刚刚创建的节点引用
+                        strongSelf.currentUpdatingAINode = (MessageCellNode *)[strongSelf.tableNode nodeForRowAtIndexPath:finalMessagePath];
+                        // d. 启动我们的打字机定时器
+                        [strongSelf startTypingTimer];
                     }
-                }
-                
-                // 设置任务已完成标志
-                self.currentStreamingTask = nil;
-                
-                // 注意：不需要立即调用saveContext，typeNextCharacter方法会在缓冲区为空时保存
-            } else if (partialResponse) {
-                // 如果没有正在更新的消息（例如，出错了或首次就完成了），则直接添加
-                [self addMessageWithText:partialResponse isFromUser:NO];
-            }
-            
-            self.currentStreamingTask = nil; // 清理任务引用
-            // 注意：我们保留currentUpdatingAIMessage，直到缓冲区清空
-        } else { // isDone == NO，处理中间的数据块
-            if (self.isThinking) {
-                // 收到第一个数据块，创建新消息
-                [self hideThinkingStatus];
-                
-                // 创建新的 AI 消息记录到 Core Data，但初始为空内容
-                self.currentUpdatingAIMessage = [[CoreDataManager sharedManager] addMessageToChat:self.chat content:@"" isFromUser:NO];
-                
-                // 重新获取数据并用无动画方式插入新行
-                [self fetchMessages]; 
-                NSIndexPath *newIndexPath = [NSIndexPath indexPathForRow:self.messages.count - 1 inSection:0];
-                
-                // 使用无动画方式插入，减少抖动
-                [UIView performWithoutAnimation:^{
-                    [self.tableView beginUpdates];
-                    [self.tableView insertRowsAtIndexPaths:@[newIndexPath] withRowAnimation:UITableViewRowAnimationNone];
-                    [self.tableView endUpdates];
                 }];
-                
-                // 平滑滚动到底部
-                [self scrollToBottomImmediate];
-                
-                // 将这个数据块添加到打印缓冲区
-                if (incrementalContent.length > 0) {
-                    [self addTextToTypingBuffer:incrementalContent];
-                }
-            } else if (self.currentUpdatingAIMessage) {
-                // 将这个增量数据块添加到打印缓冲区
-                if (incrementalContent.length > 0) {
-                    [self addTextToTypingBuffer:incrementalContent];
-                }
             }
-        }
+
+            // 6. 流结束时的处理
+            if (isDone) {
+                strongSelf.currentStreamingTask = nil;
+            }
+        });
     }];
 }
 
-- (void)addMessageWithText:(NSString *)text isFromUser:(BOOL)isFromUser {
-    // 记录当前消息数量
-    NSInteger currentCount = self.messages.count;
-    
-    // 保存消息到CoreData
-    [[CoreDataManager sharedManager] addMessageToChat:self.chat content:text isFromUser:isFromUser];
-    
-    // 重新获取消息数据
-    [self fetchMessages];
-    
-    // 如果实际上是新增了消息，则只插入新行而不是完全刷新
-    if (self.messages.count > currentCount) {
-        NSIndexPath *newIndexPath = [NSIndexPath indexPathForRow:self.messages.count - 1 inSection:0];
-        
-        // 禁用动画执行插入操作，减少视觉抖动
-        [UIView performWithoutAnimation:^{
-            [self.tableView beginUpdates];
-            [self.tableView insertRowsAtIndexPaths:@[newIndexPath] withRowAnimation:UITableViewRowAnimationNone];
-            [self.tableView endUpdates];
-        }];
-        
-        // 滚动到底部
-        [self scrollToBottom];
-    }
-}
 
-#pragma mark - Input Handling
-
-- (void)handleInputTextViewTap:(UITapGestureRecognizer *)gesture {
-    // 确保输入框成为第一响应者
-    [self.inputTextView becomeFirstResponder];
-}
-
-- (BOOL)textViewShouldBeginEditing:(UITextView *)textView {
-    // 开始编辑时滚动到底部
-    [self scrollToBottom];
-    
-    // 显式调用成为第一响应者（虽然返回YES通常会自动执行此操作）
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [self.inputTextView becomeFirstResponder];
-    });
-    
-    return YES;
-}
-
-- (void)showAPIKeyAlert {
-    NSString *apiKey = [[NSUserDefaults standardUserDefaults] stringForKey:@"OpenAIAPIKey"];
-        [AlertHelper showAPIKeyAlertOn:self withCurrentKey:apiKey withSaveHandler:^(NSString *newKey) {
-            // 保存 API Key
-            [[NSUserDefaults standardUserDefaults] setObject:newKey forKey:@"OpenAIAPIKey"];
-            [[NSUserDefaults standardUserDefaults] synchronize];
-            
-            // 设置 API Manager 的 API Key
-            [[APIManager sharedManager] setApiKey:newKey];
-            
-            // 显示成功提示
-            [AlertHelper showSuccessAlertOn:self withMessage:@"API Key 已保存"];
-        }];
-}
-
-//- (void)showErrorAlert:(NSString *)message {
-//    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"错误"
-//                                                                  message:message
-//                                                           preferredStyle:UIAlertControllerStyleAlert];
-//    
-//    UIAlertAction *okAction = [UIAlertAction actionWithTitle:@"确定"
-//                                                      style:UIAlertActionStyleDefault
-//                                                    handler:nil];
-//    
-//    [alert addAction:okAction];
-//    
-//    [self presentViewController:alert animated:YES completion:nil];
-//}
-//
-//- (void)showSuccessAlert:(NSString *)message {
-//    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"成功"
-//                                                                  message:message
-//                                                           preferredStyle:UIAlertControllerStyleAlert];
-//    
-//    UIAlertAction *okAction = [UIAlertAction actionWithTitle:@"确定"
-//                                                      style:UIAlertActionStyleDefault
-//                                                    handler:nil];
-//    
-//    [alert addAction:okAction];
-//    
-//    [self presentViewController:alert animated:YES completion:nil];
-//}
-
-- (void)showNeedAPIKeyAlert {
-    [AlertHelper showNeedAPIKeyAlertOn:self withSettingHandler:^{
-            [self showAPIKeyAlert]; // 调用下一个弹窗
-        }];
-}
-
-- (void)resetAPIKey {
-    [AlertHelper showConfirmationAlertOn:self
-                                   withTitle:@"重置 API Key"
-                                     message:@"确定要重置当前的 API Key 吗？"
-                                confirmTitle:@"重置"
-                         confirmationHandler:^{
-            // 清除保存的API Key
-            [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"OpenAIAPIKey"];
-            [[NSUserDefaults standardUserDefaults] synchronize];
-            
-            // 清空API Manager中的API Key
-            [[APIManager sharedManager] setApiKey:@""];
-            
-            // 显示成功提示
-            [AlertHelper showSuccessAlertOn:self withMessage:@"API Key 已重置，请设置新的 API Key"];
-            
-            // 提示用户设置新的API Key
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                [self showAPIKeyAlert];
-            });
-        }];
-}
-
-- (BOOL)isTableViewScrolledToBottom {
-    // 判断tableView是否滚动到底部的逻辑
-    CGFloat contentHeight = self.tableView.contentSize.height;
-    CGFloat offsetY = self.tableView.contentOffset.y + self.tableView.frame.size.height;
-    
-    // 如果偏移量加上tableView高度大于或等于内容高度(减去一个小的阈值)，则认为滚动到底部
-    return offsetY >= contentHeight - 20;
-}
-
-- (void)showModelSelectionMenu:(UIButton *)sender {
-    NSArray *models = @[@"gpt-3.5-turbo", @"gpt-4o"]; // 模型列表可以从配置或APIManager获取
-        [AlertHelper showModelSelectionMenuOn:self withModels:models selectionHandler:^(NSString *selectedModel) {
-            [self updateModelSelection:selectedModel button:sender];
-        }];
-}
-
-- (void)updateModelSelection:(NSString *)modelName button:(UIButton *)button {
-    // 更新 APIManager 中的模型名称
-    [APIManager sharedManager].currentModelName = modelName;
-    
-    // 更新按钮标题
-    [button setTitle:modelName forState:UIControlStateNormal];
-    
-    // 保存选择到 UserDefaults
-    [[NSUserDefaults standardUserDefaults] setObject:modelName forKey:@"SelectedModelName"];
-    [[NSUserDefaults standardUserDefaults] synchronize];
-}
-
-#pragma mark - 逐字打印实现
-
-// 启动逐字打印定时器
-- (void)startTypingAnimation {
-    // 如果已有定时器正在运行，则不重新启动
-    if (self.typingTimer && self.typingTimer.valid) {
+// 启动定时器
+- (void)startTypingTimer {
+    // 如果定时器已在运行，则无需操作
+    if (self.typingTimer.isValid) {
         return;
     }
-    
-    // 创建并启动定时器
-    self.typingTimer = [NSTimer scheduledTimerWithTimeInterval:self.typingSpeed
+    self.typingTimer = [NSTimer scheduledTimerWithTimeInterval:kTypingTimerInterval // 0.05
                                                       target:self
-                                                    selector:@selector(typeNextCharacter)
+                                                    selector:@selector(typeNextChunk:)
                                                     userInfo:nil
                                                      repeats:YES];
-    
-    // 确保定时器在滚动时也能正常工作
-    [[NSRunLoop currentRunLoop] addTimer:self.typingTimer forMode:NSRunLoopCommonModes];
 }
 
-// 停止逐字打印定时器
-- (void)stopTypingAnimation {
+// 定时器每次触发时调用的方法 (最终优化版 - 完美处理两种滚动场景)
+- (void)typeNextChunk:(NSTimer *)timer {
+    // 安全检查
+    if (!self.currentUpdatingAINode || !self.currentUpdatingAIMessage) {
+        [self stopTypingTimer];
+        return;
+    }
+
+    if (self.displayedTextLength < self.fullResponseBuffer.length) {
+        // 更新要显示的文本内容
+        self.displayedTextLength += kTypingSpeedCharacterChunk;
+        if (self.displayedTextLength > self.fullResponseBuffer.length) {
+            self.displayedTextLength = self.fullResponseBuffer.length;
+        }
+        NSString *substringToShow = [self.fullResponseBuffer substringToIndex:self.displayedTextLength];
+        [self.currentUpdatingAINode updateMessageText:substringToShow];
+
+        
+        // --- 核心防抖动逻辑 ---
+
+        // 步骤 1: 检查用户是否在看最新的消息。这是决定行为模式的“开关”。
+        BOOL shouldStickToBottom = [self isScrolledToBottom];
+
+        // 步骤 2: 记录布局更新前的 contentSize。
+        CGSize oldContentSize = self.tableNode.view.contentSize;
+
+        // 步骤 3: 同步更新布局，让 cell 高度根据新文本重新计算。
+        [UIView performWithoutAnimation:^{
+            [self.tableNode performBatchUpdates:nil completion:nil];
+        }];
+
+        // 步骤 4: 根据“开关”状态，执行不同的操作。
+        if (shouldStickToBottom) {
+            // --- 场景 A: 用户在底部 ---
+            // 目标：让列表“粘”在底部，消除抖动。
+            
+            // 计算内容高度的增量
+            CGFloat contentHeightDelta = self.tableNode.view.contentSize.height - oldContentSize.height;
+            
+            if (contentHeightDelta > 0) {
+                // 将滚动位置向下移动完全相同的增量，以抵消视觉跳动
+                CGPoint newOffset = CGPointMake(0, self.tableNode.view.contentOffset.y + contentHeightDelta);
+                [self.tableNode.view setContentOffset:newOffset animated:NO];
+            }
+        }
+        // --- 场景 B: 用户已向上滚动 ---
+        // 在这种情况下，`shouldStickToBottom` 为 NO，我们什么都不做。
+        // `performBatchUpdates` 会在屏幕外更新 cell 高度和 contentSize，
+        // 但用户的滚动位置 `contentOffset` 保持不变，因此他们的视图是完全稳定的。
+        
+    } else {
+        // 文本已全部显示完毕
+        if (self.currentStreamingTask == nil) {
+            [self stopTypingTimer];
+        }
+    }
+}
+
+
+// 停止并清理定时器
+- (void)stopTypingTimer {
     if (self.typingTimer) {
         [self.typingTimer invalidate];
         self.typingTimer = nil;
-    }
-}
 
-// 将文本添加到打印缓冲区
-- (void)addTextToTypingBuffer:(NSString *)text {
-    // 将新文本添加到缓冲区
-    [self.typingBuffer appendString:text];
-    
-    // 确保定时器正在运行
-    [self startTypingAnimation];
-}
-
-// 显示缓冲区中的下一个字符
-- (void)typeNextCharacter {
-    // 检查是否还有未打印的字符
-    if (self.typingBuffer.length == 0) {
-        [self stopTypingAnimation];
-        return;
-    }
-    
-    NSIndexPath *lastRow = [NSIndexPath indexPathForRow:self.messages.count - 1 inSection:0];
-    MessageCell *cell = [self.tableView cellForRowAtIndexPath:lastRow];
-    
-    if (!cell) {
-        return; // 如果单元格不可见，暂停打印
-    }
-    
-    // 获取当前显示的文本
-    NSString *currentText = cell.messageLabel.attributedText.string ?: @"";
-    
-    // 从缓冲区取出一个字符
-    NSString *nextChar = [self.typingBuffer substringToIndex:1];
-    [self.typingBuffer deleteCharactersInRange:NSMakeRange(0, 1)];
-    
-    // 更新cell中显示的文本
-    NSString *newText = [currentText stringByAppendingString:nextChar];
-    
-    // 创建与实际显示相同的段落样式
-    NSMutableParagraphStyle *paragraphStyle = [[NSMutableParagraphStyle alloc] init];
-    paragraphStyle.lineSpacing = 4; // 行间距
-    paragraphStyle.lineBreakMode = NSLineBreakByWordWrapping;
-    
-    // 使用带格式的文本
-    NSAttributedString *attributedText = [[NSAttributedString alloc] initWithString:newText 
-                                                                        attributes:@{
-                                                                            NSParagraphStyleAttributeName: paragraphStyle,
-                                                                            NSFontAttributeName: [UIFont systemFontOfSize:16]
-                                                                        }];
-    cell.messageLabel.attributedText = attributedText;
-    
-    // 更新数据库中的消息（但不立即保存，减少数据库操作）
-    if (self.currentUpdatingAIMessage) {
-        [self.currentUpdatingAIMessage setValue:newText forKey:@"content"];
-    }
-    
-    // 检查是否需要重新计算高度（当内容增长触发新行时）
-    static NSInteger lastUpdateLength = 0;
-    static NSInteger updateFrequency = 30; // 每30个字符更新一次布局
-    
-    BOOL needsUpdate = NO;
-    
-    // 优化更新策略，减少不必要的布局计算
-    if (newText.length > 0 && 
-        (newText.length - lastUpdateLength >= updateFrequency || // 每N个字符检查一次
-         [newText containsString:@"\n"] || // 包含换行符
-         self.typingBuffer.length == 0)) { // 缓冲区为空（最后一个字符）
+        // 定时器停止时，意味着动画结束。确保最终的完整文本被保存到CoreData。
+        if (self.currentUpdatingAIMessage && self.fullResponseBuffer.length > 0) {
+            // 获取当前CoreData中的值
+            NSString *currentSavedText = [self.currentUpdatingAIMessage valueForKey:@"content"];
+            // 只有当需要更新时才执行保存，避免不必要的操作
+            if (![currentSavedText isEqualToString:self.fullResponseBuffer]) {
+                 [self.currentUpdatingAIMessage setValue:self.fullResponseBuffer forKey:@"content"];
+                 [[CoreDataManager sharedManager] saveContext];
+            }
+        }
         
-        // 更新最后检查的长度
-        lastUpdateLength = newText.length;
-        needsUpdate = YES;
+        // 清理对节点的引用
+        self.currentUpdatingAINode = nil;
     }
-    
-    // 只在需要时更新布局，减少抖动
-    if (needsUpdate) {
-        [UIView performWithoutAnimation:^{
-            [self.tableView beginUpdates];
-            [self.tableView endUpdates];
-            
-            // 触发布局更新
-            [cell setNeedsLayout];
-            [cell layoutIfNeeded];
-        }];
-    }
-    
-    // 判断是否需要滚动
-    if ([self isTableViewScrolledToBottom]) {
-        // 只有当文本长度变化足够大时才滚动，减少频繁滚动
-        if (needsUpdate) {
+}
+// 停止并清理定时器
+
+
+//- (void)startDisplayLink {
+//
+//    [self stopDisplayLink]; // 安全起见，先停止
+//
+//    self.displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(updateFrame)];
+//
+//    [self.displayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+//
+//}
+//
+//
+//
+//- (void)stopDisplayLink {
+//
+//    [self.displayLink invalidate];
+//
+//    self.displayLink = nil;
+//
+//}
+//
+//
+//
+//// CADisplayLink 每帧会调用的方法
+//
+//- (void)updateFrame {
+//
+//    // 如果已经显示完毕，或者没有可更新的节点，就停止
+//
+//    if (self.displayedTextLength >= self.fullResponseBuffer.length) {
+//
+//        // 只有当流也结束时，才真正停止并保存
+//
+//        if (self.currentStreamingTask == nil) {
+//
+//            [self stopDisplayLink];
+//
+//            if (self.currentUpdatingAIMessage) {
+//
+//                [self.currentUpdatingAIMessage setValue:self.fullResponseBuffer forKey:@"content"];
+//
+//                [[CoreDataManager sharedManager] saveContext];
+//
+//                self.currentUpdatingAIMessage = nil;
+//
+//            }
+//
+//        }
+//
+//        return;
+//
+//    }
+//
+//
+//
+//    // 1. 确定帧要增加 多少字 (可以调整这个值来控制速度)
+//
+//    NSInteger charactersPerFrame = 2;
+//
+//    self.displayedTextLength = MIN(self.fullResponseBuffer.length, self.displayedTextLength + charactersPerFrame);
+//
+//
+//
+//    // 2. 获取当前应该显示的子字符串
+//
+//    NSString *substringToShow = [self.fullResponseBuffer substringToIndex:self.displayedTextLength];
+//
+//
+//
+//    // 3. 更新节点的数据模型
+//
+//    [self.currentUpdatingAINode updateMessageText:substringToShow];
+//
+//
+//
+//    // --- ✨  核心动画逻辑 ---
+//
+//
+//
+//    // a. 记录更新前的内容高度和滚动位置
+//
+//    CGFloat oldContentHeight = self.tableNode.view.contentSize.height;
+//
+//    CGFloat oldOffsetY = self.tableNode.view.contentOffset.y;
+//
+//
+//
+//    // b. 使用 动画的更新块，让Cell高度立即变化
+//
+//    [UIView performWithoutAnimation:^{
+//
+//        [self.tableNode performBatchUpdates:nil completion:nil];
+//
+//    }];
+//
+//
+//
+//    // c. 获取更新后的内容高度
+//
+//    CGFloat newContentHeight = self.tableNode.view.contentSize.height;
+//
+//
+//
+//    // d. 计算高度差和新的滚动位置
+//
+//    CGFloat heightDelta = newContentHeight - oldContentHeight;
+//
+//
+//
+//    // 只有当高度确实增 ，并且用户停留在底部时，才执行滚动动画
+//
+//    if (heightDelta > 0 && [self isScrolledToBottom]) {
+//
+//        CGPoint newOffset = CGPointMake(0, oldOffsetY + heightDelta);
+//
+//
+//
+//        // e. 对滚动位置 contentOffset 进行平滑动画
+//
+//        [UIView animateWithDuration:0.25 delay:0 options:UIViewAnimationOptionCurveEaseInOut animations:^{
+//
+//            [self.tableNode.view setContentOffset:newOffset];
+//
+//        } completion:nil];
+//
+//    }
+//
+//}
+
+
+
+// --- FIX: 因为 addMessageWithText 添加一个完成回调，以便按顺序执行操作 ---
+
+- (void)addMessageWithText:(NSString *)text
+
+                isFromUser:(BOOL)isFromUser
+
+                completion:(nullable void (^)(void))completion {
+
+    NSInteger currentCount = self.messages.count;
+
+    [[CoreDataManager sharedManager] addMessageToChat:self.chat content:text isFromUser:isFromUser];
+
+    [self fetchMessages];
+
+
+
+    if (self.messages.count > currentCount) {
+
+        NSIndexPath *newIndexPath = [NSIndexPath indexPathForRow:self.messages.count - 1 inSection:0];
+
+
+
+        // 使用 performBatchUpdates 来确保操作的原子性和动画的流畅性
+
+        [self.tableNode performBatchUpdates:^{
+
+            [self.tableNode insertRowsAtIndexPaths:@[newIndexPath] withRowAnimation:UITableViewRowAnimationFade];
+
+        } completion:^(BOOL finished) {
+
+            // 在动画完成后滚动到底部并执行回调
+
             [self scrollToBottom];
-        }
+
+            if (completion) {
+
+                completion();
+
+            }
+
+        }];
+
     }
-    
-    // 如果缓冲区为空，且当前响应已完成，则保存数据
-    if (self.typingBuffer.length == 0 && !self.currentStreamingTask) {
-        // 保存最终的消息内容
-        [[CoreDataManager sharedManager] saveContext]; 
-        
-        // 确保最后一次高度刷新
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [UIView performWithoutAnimation:^{
-                [self.tableView beginUpdates];
-                [self.tableView endUpdates];
-            }];
-        });
-    }
+
 }
 
-// 清空打印缓冲区并立即显示所有内容（用于紧急情况）
-- (void)flushTypingBuffer {
-    if (self.typingBuffer.length == 0) {
-        return;
+
+
+// 辅助方法，用于构建消息历史
+
+- (NSMutableArray *)buildMessageHistory {
+
+    NSMutableArray *messages = [NSMutableArray array];
+
+
+
+    // 添加系统提示
+
+    if ([APIManager sharedManager].defaultSystemPrompt.length > 0) {
+
+        [messages addObject:@{
+
+            @"role": @"system",
+
+            @"content": [APIManager sharedManager].defaultSystemPrompt
+
+        }];
+
     }
-    
-    NSIndexPath *lastRow = [NSIndexPath indexPathForRow:self.messages.count - 1 inSection:0];
-    MessageCell *cell = [self.tableView cellForRowAtIndexPath:lastRow];
-    
-    if (cell) {
-        // 获取当前显示的文本
-        NSString *currentText = cell.messageLabel.attributedText.string ?: @"";
-        
-        // 将整个缓冲区的内容一次性添加
-        NSString *newText = [currentText stringByAppendingString:self.typingBuffer];
-        
-        // 创建与实际显示相同的段落样式
-        NSMutableParagraphStyle *paragraphStyle = [[NSMutableParagraphStyle alloc] init];
-        paragraphStyle.lineSpacing = 4; // 行间距
-        paragraphStyle.lineBreakMode = NSLineBreakByWordWrapping;
-        
-        // 使用带格式的文本
-        NSAttributedString *attributedText = [[NSAttributedString alloc] initWithString:newText 
-                                                                            attributes:@{
-                                                                                NSParagraphStyleAttributeName: paragraphStyle,
-                                                                                NSFontAttributeName: [UIFont systemFontOfSize:16]
-                                                                            }];
-        cell.messageLabel.attributedText = attributedText;
-        
-        // 更新数据库中的消息
-        if (self.currentUpdatingAIMessage) {
-            [self.currentUpdatingAIMessage setValue:newText forKey:@"content"];
-            [[CoreDataManager sharedManager] saveContext];
-        }
-        
-        // 重新计算高度
-        [self.tableView beginUpdates];
-        [self.tableView endUpdates];
-        
-        // 触发布局更新
-        [cell setNeedsLayout];
-        [cell layoutIfNeeded];
-        
-        [self scrollToBottom];
+
+
+
+    // 添加历史消息（最多4轮对话，即8条消息）
+
+    NSInteger messageCount = self.messages.count;
+
+    NSInteger startIndex = MAX(0, messageCount - 8);
+
+
+
+    for (NSInteger i = startIndex; i < messageCount; i++) {
+
+        NSManagedObject *message = self.messages[i];
+
+        NSString *content = [message valueForKey:@"content"];
+
+        BOOL isFromUser = [[message valueForKey:@"isFromUser"] boolValue];
+
+
+
+        [messages addObject:@{
+
+            @"role": isFromUser ? @"user" : @"assistant",
+
+            @"content": content
+
+        }];
+
     }
-    
-    // 清空缓冲区
-    [self.typingBuffer setString:@""];
-    
-    // 停止定时器
-    [self stopTypingAnimation];
+
+
+
+    return messages;
+
 }
+
+
+
+#pragma mark - Input Handling
+
+
+
+- (void)handleInputTextViewTap:(UITapGestureRecognizer *)gesture {
+
+    // 确保输入框成为一响应者
+
+    [self.inputTextView becomeFirstResponder];
+
+}
+
+
+
+- (BOOL)textViewShouldBeginEditing:(UITextView *)textView {
+
+    // 开始编辑时滚动到底部
+
+    [self scrollToBottom];
+
+
+
+    // 显式调用成为一响应者（虽然返回YES通常会自动执行此操作）
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+
+        [self.inputTextView becomeFirstResponder];
+
+    });
+
+
+
+    return YES;
+
+}
+
+
+
+- (void)showAPIKeyAlert {
+
+    NSString *apiKey = [[NSUserDefaults standardUserDefaults] stringForKey:@"OpenAIAPIKey"];
+
+        [AlertHelper showAPIKeyAlertOn:self withCurrentKey:apiKey withSaveHandler:^(NSString *newKey) {
+
+            // 保存 API Key
+
+            [[NSUserDefaults standardUserDefaults] setObject:newKey forKey:@"OpenAIAPIKey"];
+
+            [[NSUserDefaults standardUserDefaults] synchronize];
+
+
+
+            // 设置 API Manager 的 API Key
+
+            [[APIManager sharedManager] setApiKey:newKey];
+
+
+
+            // 显示成功提示
+
+            [AlertHelper showSuccessAlertOn:self withMessage:@"API Key 已保存"];
+
+        }];
+
+}
+
+
+
+//- (void)showErrorAlert:(NSString *)message {
+
+//    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"错误"
+
+//                                                                  message:message
+
+//                                                           preferredStyle:UIAlertControllerStyleAlert];
+
+//
+
+//    UIAlertAction *okAction = [UIAlertAction actionWithTitle:@"确定"
+
+//                                                      style:UIAlertActionStyleDefault
+
+//                                                    handler:nil];
+
+//
+
+//    [alert addAction:okAction];
+
+//
+
+//    [self presentViewController:alert animated:YES completion:nil];
+
+//}
+
+//
+
+//- (void)showSuccessAlert:(NSString *)message {
+
+//    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"成功"
+
+//                                                                  message:message
+
+//                                                           preferredStyle:UIAlertControllerStyleAlert];
+
+//
+
+//    UIAlertAction *okAction = [UIAlertAction actionWithTitle:@"确定"
+
+//                                                      style:UIAlertActionStyleDefault
+
+//                                                    handler:nil];
+
+//
+
+//    [alert addAction:okAction];
+
+//
+
+//    [self presentViewController:alert animated:YES completion:nil];
+
+//}
+
+
+
+- (void)showNeedAPIKeyAlert {
+
+    [AlertHelper showNeedAPIKeyAlertOn:self withSettingHandler:^{
+
+            [self showAPIKeyAlert]; // 调用下一个弹窗
+
+        }];
+
+}
+
+
+
+- (void)resetAPIKey {
+
+    [AlertHelper showConfirmationAlertOn:self
+
+                                   withTitle:@"重置 API Key"
+
+                                     message:@"确定要重置当前的 API Key 吗？"
+
+                                confirmTitle:@"重置"
+
+                         confirmationHandler:^{
+
+            // 清除保存的API Key
+
+            [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"OpenAIAPIKey"];
+
+            [[NSUserDefaults standardUserDefaults] synchronize];
+
+
+
+            // 清空API Manager中的API Key
+
+            [[APIManager sharedManager] setApiKey:@""];
+
+
+
+            // 显示成功提示
+
+            [AlertHelper showSuccessAlertOn:self withMessage:@"API Key 已重置，请设置新的 API Key"];
+
+
+
+            // 提示用户设置新的API Key
+
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+
+                [self showAPIKeyAlert];
+
+            });
+
+        }];
+
+}
+
+
+
+- (BOOL)isScrolledToBottom {
+
+    if (!self.tableNode.view) return NO;
+
+
+
+    CGFloat contentHeight = self.tableNode.view.contentSize.height;
+
+    CGFloat viewHeight = self.tableNode.view.bounds.size.height;
+
+
+
+    // 如果内容还没填满一屏，也算是在底部
+
+    if (contentHeight < viewHeight) {
+
+        return YES;
+
+    }
+
+
+
+    CGFloat offsetY = self.tableNode.view.contentOffset.y;
+
+    CGFloat tolerance = 20.0; // 容差
+
+
+
+    return offsetY + viewHeight >= contentHeight - tolerance;
+
+}
+
+
+
+- (void)showModelSelectionMenu:(UIButton *)sender {
+
+    NSArray *models = @[@"gpt-3.5-turbo", @"gpt-4o"]; // 模型列表可以从配置或APIManager获取
+
+        [AlertHelper showModelSelectionMenuOn:self withModels:models selectionHandler:^(NSString *selectedModel) {
+
+            [self updateModelSelection:selectedModel button:sender];
+
+        }];
+
+}
+
+
+
+- (void)updateModelSelection:(NSString *)modelName button:(UIButton *)button {
+
+    // 更新 APIManager 中的模型名称
+
+    [APIManager sharedManager].currentModelName = modelName;
+
+
+
+    // 更新按钮标题
+
+    [button setTitle:modelName forState:UIControlStateNormal];
+
+
+
+    // 保存选择到 UserDefaults
+
+    [[NSUserDefaults standardUserDefaults] setObject:modelName forKey:@"SelectedModelName"];
+
+    [[NSUserDefaults standardUserDefaults] synchronize];
+
+}
+
+
+
+
 
 #pragma mark - 应用程序状态通知处理
 
+
+
 - (void)applicationWillResignActive:(NSNotification *)notification {
+
     // 应用即将进入非活动状态（如来电、短信等）
-    [self flushTypingBuffer]; // 立即显示所有内容
+
+//    [self flushTypingBuffer]; // 立即显示所有内容
+
 }
+
+
 
 - (void)applicationDidEnterBackground:(NSNotification *)notification {
+
     // 应用进入后台
-    [self flushTypingBuffer]; // 立即显示所有内容并保存
-    
+
+//    [self flushTypingBuffer]; // 立即显示所有内容并保存
+
+
+
     // 确保取消任何正在进行的任务
+
     if (self.currentStreamingTask) {
+
         [[APIManager sharedManager] cancelStreamingTask:self.currentStreamingTask];
+
         self.currentStreamingTask = nil;
+
     }
+
 }
 
-@end 
+@end

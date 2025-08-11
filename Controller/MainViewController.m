@@ -20,7 +20,7 @@
     // 初始化CoreData默认数据
     [[CoreDataManager sharedManager] setupDefaultChatsIfNeeded];
     
-    // 获取第一个聊天
+    // 获取�一个聊天
     NSArray *chatList = [[CoreDataManager sharedManager] fetchAllChats];
     if (chatList.count > 0) {
         [self didSelectChat:chatList[0]];
@@ -33,20 +33,20 @@
     // 创建聊天详情视图控制器
     self.chatDetailViewController = [[ChatDetailViewController alloc] init];
     
-    // 创建导航控制器，以聊天详情为根视图
+    // 创建导航控制器，以聊天详情为� �视图
     self.navigationController = [[UINavigationController alloc] initWithRootViewController:self.chatDetailViewController];
     
-    // 隐藏导航栏，因为聊天详情有自己的导航UI
+    // 隐藏导航� �，� 为聊天详情有自己的导航UI
     self.navigationController.navigationBarHidden = YES;
     
-    // 禁用导航控制器的交互式弹出手势，因为我们将自己管理滑动手势
+    // 禁用导航控制器的交互式弹出手势，� 为我�将自己管理滑动手势
     self.navigationController.interactivePopGestureRecognizer.enabled = NO;
     
     // 创建聊天历史视图控制器
     self.chatsViewController = [[ChatsViewController alloc] init];
     self.chatsViewController.delegate = self;
     
-    // 添加导航控制器作为子视图控制器
+    // 添� 导航控制器作为子视图控制器
     [self addChildViewController:self.navigationController];
     [self.view addSubview:self.navigationController.view];
     [self.navigationController didMoveToParentViewController:self];
@@ -61,7 +61,7 @@
         [self.navigationController.view.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor]
     ]];
     
-    // 为ChatDetailViewController中的菜单按钮添加动作
+    // 为ChatDetailViewController中的菜单按钮添� 动作
     [self setupMenuButton];
 }
 
@@ -104,10 +104,10 @@
 }
 
 - (void)showChatsList {
-    // 修改为自定义转场，让ChatsViewController从左侧滑出
+    // 修改为自定义�场，让ChatsViewController从左侧滑出
     self.chatsViewController.modalPresentationStyle = UIModalPresentationCustom;
     
-    // 添加自定义动画
+    // 添� 自定义动画
     CATransition *transition = [CATransition animation];
     transition.duration = 0.3;
     transition.type = kCATransitionPush;
