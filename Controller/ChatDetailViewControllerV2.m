@@ -1,34 +1,40 @@
-#import "ChatDetailViewController.h"
+//
+//  ChatDetailViewControllerV2.m
+//  ChatGPT-OC-Clone
+//
+//  Created by mac—lzh on 2025/8/12.
+//
 
-// 移除 Texture 相关头文件（改用 SwiftUI 展示）
-// #import "ThinkingNode.h"
-// #import "MessageCellNode.h"
-// #import "RichMessageCellNode.h"
+#import "ChatDetailViewControllerV2.h"
+#import <AsyncDisplayKit/ASDisplayNode+Beta.h>
+#import "ThinkingNode.h"
+#import "RichMessageCellNode.h"
+#import "MessageCellNode.h"
 #import "AttachmentThumbnailView.h"
 #import "CoreDataManager.h"
 #import "APIManager.h"
-#import "ResponseParsingTask.h"
-#import "ParserResult.h"
 @import CoreData;
 #import <QuickLookThumbnailing/QuickLookThumbnailing.h>
-#import "ChatGPT_OC_Clone-Swift.h"
 
 // MARK: - 常量定义
 // 每次定时器触发时显示的字数，调大此值可加快打字速度
-static const NSInteger kTypingSpeedCharacterChunk = 16;
-// 定时器触发间隔，调小此值可加快打字速度
-static const NSTimeInterval kTypingTimerInterval = 0.12; // 调整为与 SwiftUI 阈值同步，约 1.3 秒打完 64 字符
-static const NSInteger kParserThresholdTextCount = 64;   // 解析阈值
+static const NSInteger kTypingSpeedCharacterChunk = 8; // 从5增加到8，减少更新频率
+// 定时器触发间隔，优化为0.15s以减少CPU占用
+static const NSTimeInterval kTypingTimerInterval = 0.15; // 从0.1增加到0.15，减少CPU占用
 
-@interface ChatDetailViewController () <UITextViewDelegate>
+// MARK: - 测试开关
+// 设置为 YES 使用 RichMessageCell（支持富文本），设置为 NO 使用 MessageCellNode（纯文本）
+// 修改这个值来测试不同的节点类型，无需修改其他代码
+static const BOOL kUseRichMessageCell = YES;
+
+@interface ChatDetailViewControllerV2 () <UITextViewDelegate, ASTableDataSource, ASTableDelegate>
 
 // MARK: - 数据相关属性
 @property (nonatomic, strong) NSMutableArray *messages;
 @property (nonatomic, strong) NSMutableArray *selectedAttachments; // 存储多个附件 (UIImage 或 NSURL)
 
 // MARK: - UI组件属性
-@property (nonatomic, strong) ChatSwiftUIViewWrapper *chatSwiftUIWrapper;
-@property (nonatomic, strong) ChatViewModel *chatViewModel;
+@property (nonatomic, strong) ASTableNode *tableNode;
 @property (nonatomic, strong) UIView *inputContainerView;
 @property (nonatomic, strong) UIView *inputBackgroundView;
 @property (nonatomic, strong) UITextView *inputTextView;
@@ -48,58 +54,90 @@ static const NSInteger kParserThresholdTextCount = 64;   // 解析阈值
 @property (nonatomic, strong) NSTimer *typingTimer;
 @property (nonatomic, strong) NSMutableString *fullResponseBuffer; // 流式响应的完整文本缓冲区
 @property (nonatomic, assign) NSInteger displayedTextLength; // 当前UI上已经显示的文本长度
-
-@property (nonatomic, strong) NSObject *updateDebouncer; // 防抖动对象
+@property (nonatomic, weak) id currentUpdatingAINode; // 兼容普通与富文本节点
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSValue *> *nodeSizeCache; // 新增：节点尺寸缓存
+@property (nonatomic, assign) BOOL isTypingAnimationActive; // 新增：防止重复动画
 
 // MARK: - 网络请求相关属性
 @property (nonatomic, strong) NSURLSessionDataTask *currentStreamingTask;
 @property (nonatomic, weak) NSManagedObject *currentUpdatingAIMessage; // 正在更新的AI消息对象
 
-// MARK: - 解析优化相关属性
-@property (nonatomic, strong) ResponseParsingTask *parsingTask;
-@property (nonatomic, assign) NSInteger currentTextCount;
+// MARK: - 布局优化属性
+@property (nonatomic, assign) NSInteger layoutUpdateCounter;
+@property (nonatomic, copy) NSString *lastDisplayedSubstring; // 缓存上次显示的字符串，避免重复布局
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSValue *> *heightCache; // 高度缓存：key为内容hash，value为CGSize
+@property (nonatomic, assign) NSTimeInterval lastLayoutUpdateTime; // 上次布局更新的时间戳，用于防抖控制
+
+// MARK: - 滚动粘底属性
+@property (nonatomic, assign) BOOL shouldAutoScrollToBottom; // 当用户未手动上滑时，自动粘底
+@property (nonatomic, assign) BOOL userIsDragging;
+@property (nonatomic, assign) BOOL isNearBottom; // 新增：是否接近底部
+@property (nonatomic, assign) CGFloat lastContentOffsetY; // 新增：记录上次滚动位置
 
 @end
 
-@implementation ChatDetailViewController
+@implementation ChatDetailViewControllerV2
 
 // MARK: - 生命周期方法
 - (void)viewDidLoad {
     [super viewDidLoad];
     
+    // 输出当前使用的节点类型，方便测试验证
+    NSLog(@"ChatDetailViewControllerV2: 当前使用 %@ 节点", 
+          kUseRichMessageCell ? @"RichMessageCellNode（富文本）" : @"MessageCellNode（纯文本）");
+    
     // 1. 初始化非视图相关的属性
     self.isAIThinking = NO;
     self.fullResponseBuffer = [NSMutableString string];
     self.selectedAttachments = [NSMutableArray array];
-    self.updateDebouncer = [[NSObject alloc] init];
-    self.parsingTask = [[ResponseParsingTask alloc] init];
-    self.currentTextCount = 0;
     
-    // 2. 初始化并添加核心UI组件（SwiftUI 聊天界面）
-    self.chatViewModel = [ChatSwiftUIView createViewModel];
-    self.chatSwiftUIWrapper = [ChatSwiftUIView createWrapperWith:self.chatViewModel];
-    [self addChildViewController:self.chatSwiftUIWrapper];
-    [self.view addSubview:self.chatSwiftUIWrapper.view];
+    // 2. 初始化高度缓存系统
+    self.heightCache = [NSMutableDictionary dictionary];
+    self.lastDisplayedSubstring = @"";
+    self.nodeSizeCache = [NSMutableDictionary dictionary]; // 新增：初始化节点尺寸缓存
+    self.isTypingAnimationActive = NO; // 新增：初始化动画状态
     
-    // 3. 设置所有视图和它的布局约束
+    // 粘底滚动初始化
+    self.shouldAutoScrollToBottom = YES;
+    self.userIsDragging = NO;
+    self.isNearBottom = YES; // 初始状态设为接近底部，确保初始聊天时能自动滚动
+    
+    // 3. 初始化并添加核心UI组件（ASTableNode）
+    // 必须在setupViews之前执行，因为setupViews会为tableNode创建约束
+    _tableNode = [[ASTableNode alloc] initWithStyle:UITableViewStylePlain];
+    _tableNode.dataSource = self;
+    _tableNode.delegate = self;
+    _tableNode.view.separatorStyle = UITableViewCellSeparatorStyleNone;
+    
+    // 关键改进：配置表视图属性以确保稳定的布局
+    _tableNode.view.rowHeight = UITableViewAutomaticDimension;
+    _tableNode.view.estimatedRowHeight = 80.0; // 合理的估算高度
+    _tableNode.view.allowsSelection = NO;
+    _tableNode.view.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
+    _tableNode.view.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentAutomatic;
+    
+    [self.view addSubnode:_tableNode];
+    
+    // 4. 设置所有视图和它的布局约束
     [self setupViews];
     
-    // 4. 初始化辅助类和加载数据
+    // 5. 初始化辅助类和加载数据
     self.mediaPickerManager = [[MediaPickerManager alloc] initWithPresenter:self];
     self.mediaPickerManager.delegate = self;
     [self fetchMessages]; // 在UI设置好后加载数据
     
-    // 5. 设置通知和其他UI状态
-    [self updatePlaceholderVisibility]; // 依赖于setupViews中创建的placeholderLabel
+    // 6. 设置通知和其他UI状态
+    [self updatePlaceholderVisibility];
     [self setupNotifications];
     
-    // 6. 加载用户设置和API Key
+    // 7. 加载用户设置和API Key
     [self loadUserSettings];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     [self fetchMessages];
+    [self.tableNode reloadData];
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
@@ -110,11 +148,15 @@ static const NSInteger kParserThresholdTextCount = 64;   // 解析阈值
         [[APIManager sharedManager] cancelStreamingTask:self.currentStreamingTask];
         self.currentStreamingTask = nil;
         
-        // 如果AI仍在思考，则更新 SwiftUI 状态
+        // 如果AI仍在思考，则更新数据源并刷新UI
         if (self.isAIThinking) {
             self.isAIThinking = NO;
+            [self.tableNode reloadData];
         }
     }
+    
+    // 重置动画状态
+    self.isTypingAnimationActive = NO;
 }
 
 - (void)dealloc {
@@ -168,15 +210,14 @@ static const NSInteger kParserThresholdTextCount = 64;   // 解析阈值
     // 输入区域
     [self setupInputArea];
     
-    // 设置 SwiftUI 聊天界面约束
-    self.chatSwiftUIWrapper.view.translatesAutoresizingMaskIntoConstraints = NO;
+    // 设置tableNode约束
+    _tableNode.view.translatesAutoresizingMaskIntoConstraints = NO;
     [NSLayoutConstraint activateConstraints:@[
-        [self.chatSwiftUIWrapper.view.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:44],
-        [self.chatSwiftUIWrapper.view.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
-        [self.chatSwiftUIWrapper.view.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        [self.chatSwiftUIWrapper.view.bottomAnchor constraintEqualToAnchor:self.inputContainerView.topAnchor]
+        [_tableNode.view.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:44],
+        [_tableNode.view.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [_tableNode.view.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [_tableNode.view.bottomAnchor constraintEqualToAnchor:self.inputContainerView.topAnchor]
     ]];
-    [self.chatSwiftUIWrapper didMoveToParentViewController:self];
 }
 
 - (void)setupHeader {
@@ -255,8 +296,6 @@ static const NSInteger kParserThresholdTextCount = 64;   // 解析阈值
 }
 
 - (void)setupInputArea {
-    // 1. 创建视图
-    // 容器视图 (阴影层)
     self.inputContainerView = [[UIView alloc] init];
     self.inputContainerView.backgroundColor = [UIColor clearColor];
     self.inputContainerView.translatesAutoresizingMaskIntoConstraints = NO;
@@ -265,7 +304,7 @@ static const NSInteger kParserThresholdTextCount = 64;   // 解析阈值
     self.inputContainerView.layer.shadowOpacity = 0.2;
     self.inputContainerView.layer.shadowRadius = 4.0;
     
-    // 背景视图 (圆角层)
+    // 背景视图
     self.inputBackgroundView = [[UIView alloc] init];
     self.inputBackgroundView.backgroundColor = [UIColor systemGray6Color]; // 背景色延伸至底部
     self.inputBackgroundView.translatesAutoresizingMaskIntoConstraints = NO;
@@ -283,10 +322,11 @@ static const NSInteger kParserThresholdTextCount = 64;   // 解析阈值
     self.thumbnailsStackView.clipsToBounds = NO;
     [self.inputBackgroundView addSubview:self.thumbnailsStackView];
     
-    // 文本输入视图
+    // 文本输入框 - 优化约束稳定性
     self.inputTextView = [[UITextView alloc] init];
     self.inputTextView.font = [UIFont systemFontOfSize:18];
     self.inputTextView.delegate = self;
+    // 关键修复：启用滚动，支持超过4行后的滑动预览
     self.inputTextView.scrollEnabled = YES;
     self.inputTextView.backgroundColor = [UIColor clearColor];
     self.inputTextView.textContainerInset = UIEdgeInsetsMake(8, 8, 8, 8);
@@ -390,36 +430,12 @@ static const NSInteger kParserThresholdTextCount = 64;   // 解析阈值
 // MARK: - 数据管理方法
 - (void)fetchMessages {
     self.messages = [[CoreDataManager sharedManager] fetchMessagesForChat:self.chat];
-    // 如果没有消息，添加一条欢迎消息（简化版本）
+    // 如果没有消息，添加一条欢迎消息
     if (self.messages.count == 0) {
-        NSString *welcomeMessage = @"您好！我是ChatGPT，一个AI助手。我可以帮助您解答问题，请问有什么我可以帮您的吗？\n\n我可以支持**粗体文本**和*斜体文本*格式。";
-        
         [[CoreDataManager sharedManager] addMessageToChat:self.chat
-                                                  content:welcomeMessage
+                                                  content:@"您好！我是ChatGPT，一个AI助手。我可以帮助您解答问题，请问有什么我可以帮您的吗？"
                                                isFromUser:NO];
         self.messages = [[CoreDataManager sharedManager] fetchMessagesForChat:self.chat];
-    }
-    
-    // 同步数据到 SwiftUI ViewModel
-    [self syncMessagesToSwiftUI];
-}
-
-- (void)syncMessagesToSwiftUI {
-    [self.chatViewModel clearMessages];
-    
-    for (NSManagedObject *messageObj in self.messages) {
-        NSString *content = [messageObj valueForKey:@"content"];
-        BOOL isFromUser = [[messageObj valueForKey:@"isFromUser"] boolValue];
-        NSDate *date = [messageObj valueForKey:@"date"];
-        
-        if (!content) content = @"";
-        if (!date) date = [NSDate date];
-        
-        ChatMessage *message = [[ChatMessage alloc] initWithId:[NSUUID UUID].UUIDString
-                                                      content:content
-                                                   isFromUser:isFromUser
-                                                    timestamp:date];
-        [self.chatViewModel addMessage:message];
     }
 }
 
@@ -466,66 +482,122 @@ static const NSInteger kParserThresholdTextCount = 64;   // 解析阈值
     [self textViewDidChange:self.inputTextView]; // 触发输入框高度更新
     [self.inputTextView resignFirstResponder];
     
-    // 发送消息后立即滚动到底部
-    [self scrollToBottomAnimated:YES];
-    
-    // 保存用户消息到 CoreData
-    [[CoreDataManager sharedManager] addMessageToChat:self.chat content:userMessage isFromUser:YES];
-    
-    // 重新获取messages数组以包含最新的用户消息
-    self.messages = [[CoreDataManager sharedManager] fetchMessagesForChat:self.chat];
-    
-    // 使用新的流式响应方法（这会在SwiftUI中添加用户消息）
-    [self.chatViewModel startStreamingResponseFor:userMessage];
-    
-    // 显示思考视图
-    [self.chatViewModel setThinking:YES];
-    
-    // 开始AI响应
-    [self simulateAIResponse];
+    // 使用回调的方法，确保时序正确
+    [self addMessageWithText:userMessage isFromUser:YES completion:^{
+        // 在用户消息插入动画完成后，再开始AI响应
+        [self simulateAIResponse];
+    }];
 }
 
-// MARK: - SwiftUI Message Management (替代原 ASTable 数据源方法)
+// MARK: - ASTableDataSource & ASTableDelegate
+- (NSInteger)tableNode:(ASTableNode *)tableNode numberOfRowsInSection:(NSInteger)section {
+    // 如果正在思考，总行数 = 消息数 + 1 (用于ThinkingNode)
+    return self.messages.count + (self.isAIThinking ? 1 : 0);
+}
 
-// MARK: - 滚动控制 (SwiftUI)
+- (ASCellNodeBlock)tableNode:(ASTableNode *)tableNode nodeBlockForRowAtIndexPath:(NSIndexPath *)indexPath {
+    __weak typeof(self) weakSelf = self;
+    
+    // 检查是否为思考节点
+    if (self.isAIThinking && indexPath.row == self.messages.count) {
+        return ^ASCellNode *{
+            return [[ThinkingNode alloc] init];
+        };
+    }
+    
+    NSString *message = [self messageAtIndexPath:indexPath];
+    BOOL isFromUser = [self isMessageFromUserAtIndexPath:indexPath];
+    return ^ASCellNode *{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        
+        ASCellNode *node;
+        if (kUseRichMessageCell) {
+            // 使用富文本单元格
+            node = [[RichMessageCellNode alloc] initWithMessage:message isFromUser:isFromUser];
+        } else {
+            // 使用普通文本单元格
+            node = [[MessageCellNode alloc] initWithMessage:message isFromUser:isFromUser];
+        }
+        
+        // 如果是当前在流式更新的 AI 节点，则记录引用
+        if (!isFromUser && [strongSelf isIndexPathCurrentAINode:indexPath]) {
+            strongSelf->_currentUpdatingAINode = (id)node; // 兼容接口：cachedSize、updateMessageText
+            // 调试输出：确认当前更新节点的类型
+            NSLog(@"设置当前更新节点类型: %@", NSStringFromClass([node class]));
+        }
+        return node;
+    };
+}
+
+// MARK: - 滚动控制
 - (void)scrollToBottom {
-    [self scrollToBottomAnimated:YES];
-}
-
-- (void)scrollToBottomAnimated:(BOOL)animated {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [self.chatSwiftUIWrapper scrollToBottomWithAnimated:animated];
-    });
-}
-
-
-// MARK: - 防抖动更新方法
-- (void)debouncedUpdateMessage:(NSString *)message {
-    // 取消之前的更新操作
-    [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(performMessageUpdate:) object:nil];
-    
-    // 延迟执行更新，实现防抖动，调大延迟减少频繁更新
-    // 与 SwiftUI 端 64 字符阈值配合，约 100~150ms 比较合适
-    [self performSelector:@selector(performMessageUpdate:) withObject:message afterDelay:0.14];
-}
-
-- (void)performMessageUpdate:(NSString *)message {
-    // SwiftUI 版本：使用流式响应更新方法
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [self.chatViewModel updateStreamingResponse:message];
-        // 取消这里的主动滚动，由 SwiftUI 根据 isAtBottom && !userHasScrolled 自动处理
-        // [self scrollToBottomAnimated:YES];
-    });
+    if (self.messages.count > 0) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSIndexPath *lastIndexPath = [NSIndexPath indexPathForRow:self.messages.count - 1 inSection:0];
+            [self.tableNode scrollToRowAtIndexPath:lastIndexPath atScrollPosition:UITableViewScrollPositionBottom animated:YES];
+        });
+    }
 }
 
 // 立即滚动到底部，无动画
 - (void)scrollToBottomImmediate {
-    [self.chatSwiftUIWrapper scrollToBottomWithAnimated:NO];
+    if (self.messages.count > 0) {
+        NSIndexPath *lastIndexPath = [NSIndexPath indexPathForRow:self.messages.count - 1 inSection:0];
+        [self.tableNode scrollToRowAtIndexPath:lastIndexPath atScrollPosition:UITableViewScrollPositionBottom animated:NO];
+    }
 }
 
 - (BOOL)isScrolledToBottom {
-    // SwiftUI 版本：由 SwiftUI 控制粘底滚动，这里默认返回 YES
-    return YES;
+    if (!self.tableNode.view) return NO;
+    
+    CGFloat contentHeight = self.tableNode.view.contentSize.height;
+    CGFloat viewHeight = self.tableNode.view.bounds.size.height;
+    
+    // 如果内容还没填满一屏，也算是在底部
+    if (contentHeight < viewHeight) {
+        return YES;
+    }
+    
+    CGFloat offsetY = self.tableNode.view.contentOffset.y;
+    CGFloat tolerance = 50.0; // 增加容差，更宽松的底部检测
+    
+    BOOL isAtBottom = offsetY + viewHeight >= contentHeight - tolerance;
+    
+    // 更新接近底部状态
+    self.isNearBottom = isAtBottom;
+    
+    return isAtBottom;
+}
+
+// 新增：智能滚动检测
+- (BOOL)shouldPerformAutoScroll {
+    // 如果用户正在拖动，不自动滚动
+    if (self.userIsDragging) {
+        return NO;
+    }
+    
+    // 如果接近底部，允许自动滚动
+    if (self.isNearBottom) {
+        return YES;
+    }
+    
+    // 关键改进：初始聊天时，当内容开始超出屏幕时自动滚动
+    CGFloat contentHeight = self.tableNode.view.contentSize.height;
+    CGFloat viewHeight = self.tableNode.view.bounds.size.height;
+    CGFloat offsetY = self.tableNode.view.contentOffset.y;
+    
+    // 如果内容高度小于视图高度，允许自动滚动（初始状态）
+    if (contentHeight <= viewHeight) {
+        return YES;
+    }
+    
+    // 关键改进：当内容开始超出屏幕底部时，自动滚动
+    // 这样可以处理初始聊天时内容逐渐变长的情况
+    if (offsetY + viewHeight >= contentHeight - 100) { // 100px的提前滚动阈值
+        return YES;
+    }
+    
+    return NO;
 }
 
 // MARK: - 附件管理
@@ -701,21 +773,64 @@ static const NSInteger kParserThresholdTextCount = 64;   // 解析阈值
     // 更新占位状态
     [self updatePlaceholderVisibility];
     
-    // 动态调整输入框高度
+    // 关键修复：动态调整输入框高度，支持超过4行后的滑动预览
     CGSize size = [textView sizeThatFits:CGSizeMake(textView.bounds.size.width, MAXFLOAT)];
-    CGFloat newHeight = MIN(MAX(size.height, 36), 120);
     
-    // 只有当高度变化时才更新约束
-    if (self.inputTextViewHeightConstraint.constant != newHeight) {
-        self.inputTextViewHeightConstraint.constant = newHeight;
-        [self.view layoutIfNeeded];
-        [self scrollToBottom]; // 确保滚动到底部
+    // 计算行数
+    NSInteger lineCount = [self calculateLineCountForTextView:textView];
+    
+    if (lineCount <= 4) {
+        // 4行以内：自适应高度，最大120px
+        CGFloat newHeight = MIN(MAX(size.height, 36), 120);
+        
+        // 只有当高度变化时才更新约束
+        if (self.inputTextViewHeightConstraint.constant != newHeight) {
+            self.inputTextViewHeightConstraint.constant = newHeight;
+            [self.view layoutIfNeeded];
+            [self scrollToBottom]; // 确保滚动到底部
+        }
+    } else {
+        // 超过4行：固定高度为120px，启用滚动
+        if (self.inputTextViewHeightConstraint.constant != 120) {
+            self.inputTextViewHeightConstraint.constant = 120;
+            [self.view layoutIfNeeded];
+        }
+        
+        // 确保滚动到底部，让用户看到最新输入的内容
+        [self scrollToBottom];
     }
 }
 
 - (void)updatePlaceholderVisibility {
     // 根据输入文本长度更新占位可见性
     self.placeholderLabel.hidden = self.inputTextView.text.length > 0;
+}
+
+// 新增：计算文本视图的行数
+- (NSInteger)calculateLineCountForTextView:(UITextView *)textView {
+    if (!textView.text || textView.text.length == 0) {
+        return 0;
+    }
+    
+    // 使用文本容器的行数计算
+    NSLayoutManager *layoutManager = textView.layoutManager;
+    NSTextContainer *textContainer = textView.textContainer;
+    
+    // 获取文本范围
+    NSRange textRange = NSMakeRange(0, layoutManager.numberOfGlyphs);
+    
+    // 计算行数
+    NSInteger lineCount = 0;
+    NSInteger index = 0;
+    
+    while (index < textRange.length) {
+        NSRange lineRange;
+        [layoutManager lineFragmentRectForGlyphAtIndex:index effectiveRange:&lineRange];
+        lineCount++;
+        index = NSMaxRange(lineRange);
+    }
+    
+    return lineCount;
 }
 
 - (BOOL)textView:(UITextView *)textView shouldChangeTextInRange:(NSRange)range replacementText:(NSString *)text {
@@ -738,8 +853,14 @@ static const NSInteger kParserThresholdTextCount = 64;   // 解析阈值
 }
 
 // MARK: - AI响应与打字机动画
-// 核心逻辑：AI响应与打字机动画 (SwiftUI 版本)
+// 核心逻辑：AI响应与打字机动画 (已修复单次响应重复问题)
 - (void)simulateAIResponse {
+    // 防止重复调用
+    if (self.isTypingAnimationActive) {
+        NSLog(@"AI响应已在进行中，跳过重复调用");
+        return;
+    }
+    
     // 1. 重置所有相关状态
     [self stopTypingTimer];
     if (self.currentStreamingTask) {
@@ -747,11 +868,28 @@ static const NSInteger kParserThresholdTextCount = 64;   // 解析阈值
     }
     [self.fullResponseBuffer setString:@""];
     self.currentUpdatingAIMessage = nil;
+    self->_currentUpdatingAINode = nil;
     self.displayedTextLength = 0;
+    self.isTypingAnimationActive = YES; // 设置动画状态
     
-    // 2. 设置交互状态
+    // 2. 显示"Thinking"状态
+    // 步骤 1: 设置状态并计算出"思考视图"将要被插入的位置
     self.isAIThinking = YES;
-    [self.chatViewModel setInteracting:YES];
+    NSIndexPath *thinkingIndexPath = [NSIndexPath indexPathForRow:self.messages.count inSection:0];
+    
+    // 步骤 2: 执行带动画的UI更新，插入"思考视图"所在的行
+    [self.tableNode performBatchUpdates:^{
+        [self.tableNode insertRowsAtIndexPaths:@[thinkingIndexPath] withRowAnimation:UITableViewRowAnimationFade];
+    } completion:^(BOOL finished) {
+        if (finished) {
+            // 使用一个微小的延迟来确保布局已经完成
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.01 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                [self.tableNode scrollToRowAtIndexPath:thinkingIndexPath
+                                      atScrollPosition:UITableViewScrollPositionBottom
+                                              animated:YES];
+            });
+        }
+    }];
     
     // 3. 构建历史消息并发起API请求
     NSMutableArray *messages = [self buildMessageHistory];
@@ -767,9 +905,9 @@ static const NSInteger kParserThresholdTextCount = 64;   // 解析阈值
                     NSLog(@"API Error: %@", error.localizedDescription);
                 }
                 strongSelf.isAIThinking = NO;
-                [strongSelf.chatViewModel setThinking:NO];
-                [strongSelf.chatViewModel setInteracting:NO];
-                [strongSelf.chatViewModel finishStreamingResponse];
+                [strongSelf.tableNode performBatchUpdates:^{
+                    [strongSelf.tableNode deleteRowsAtIndexPaths:@[thinkingIndexPath] withRowAnimation:UITableViewRowAnimationFade];
+                } completion:nil];
                 [strongSelf stopTypingTimer];
                 return;
             }
@@ -777,25 +915,34 @@ static const NSInteger kParserThresholdTextCount = 64;   // 解析阈值
             // 4. 用最新返回的完整文本直接覆盖缓冲区
             [strongSelf.fullResponseBuffer setString:partialResponse];
             
-            // 5. 核心UI更新逻辑 - 通过 SwiftUI ViewModel
+            // 5. 核心UI更新逻辑
             if (strongSelf.isAIThinking) {
-                // 这是第一次收到数据 - 创建消息
+                // 这是第一次收到数据
                 strongSelf.isAIThinking = NO;
-                
-                // 隐藏思考视图
-                [strongSelf.chatViewModel setThinking:NO];
                 
                 // a. 在数据源中创建AI消息记录 (初始内容为空)
                 strongSelf.currentUpdatingAIMessage = [[CoreDataManager sharedManager] addMessageToChat:strongSelf.chat content:@"" isFromUser:NO];
+                [strongSelf fetchMessages]; // 重新加载数据源
                 
-                // b. 启动打字机定时器
-                [strongSelf startTypingTimer];
+                NSIndexPath *finalMessagePath = [NSIndexPath indexPathForRow:strongSelf.messages.count - 1 inSection:0];
+                
+                // b. 替换"Thinking"节点为真实的消息节点
+                [strongSelf.tableNode performBatchUpdates:^{
+                    [strongSelf.tableNode deleteRowsAtIndexPaths:@[thinkingIndexPath] withRowAnimation:UITableViewRowAnimationNone];
+                    [strongSelf.tableNode insertRowsAtIndexPaths:@[finalMessagePath] withRowAnimation:UITableViewRowAnimationFade];
+                } completion:^(BOOL finished) {
+                    if(finished) {
+                        // c. 获取刚刚创建的节点引用
+                        strongSelf->_currentUpdatingAINode = (id)[strongSelf.tableNode nodeForRowAtIndexPath:finalMessagePath];
+                        // d. 启动我们的打字机定时器
+                        [strongSelf startTypingTimer];
+                    }
+                }];
             }
             
             // 6. 流结束时的处理
             if (isDone) {
                 strongSelf.currentStreamingTask = nil;
-                [strongSelf.chatViewModel finishStreamingResponse];
             }
         });
     }];
@@ -803,24 +950,20 @@ static const NSInteger kParserThresholdTextCount = 64;   // 解析阈值
 
 // 启动定时器
 - (void)startTypingTimer {
-    // 如果定时器已在运行，则无需操作
-    if (self.typingTimer.isValid) {
+    // 如果定时器已在运行或动画未激活，则无需操作
+    if (self.typingTimer.isValid || !self.isTypingAnimationActive) {
         return;
     }
-    
-    // 启动定时器前自动滚动到底部
-    [self scrollToBottomAnimated:YES];
-    
-    self.typingTimer = [NSTimer scheduledTimerWithTimeInterval:kTypingTimerInterval
+    self.typingTimer = [NSTimer scheduledTimerWithTimeInterval:kTypingTimerInterval // 0.1
                                                       target:self
                                                     selector:@selector(typeNextChunk:)
                                                     userInfo:nil
                                                      repeats:YES];
 }
 
-// 定时器每次触发时调用的方法 (优化防抖版)
+// 定时器每次触发时调用的方法 (优化版 - 含高度缓存和防重复机制)
 - (void)typeNextChunk:(NSTimer *)timer {
-    if (!self.currentUpdatingAIMessage) {
+    if (!self->_currentUpdatingAINode || !self.currentUpdatingAIMessage || !self.isTypingAnimationActive) {
         [self stopTypingTimer];
         return;
     }
@@ -832,13 +975,95 @@ static const NSInteger kParserThresholdTextCount = 64;   // 解析阈值
         }
         NSString *substringToShow = [self.fullResponseBuffer substringToIndex:self.displayedTextLength];
         
-        // 直接更新到 ViewModel，简化逻辑
-        [self debouncedUpdateMessage:substringToShow];
+        // 关键优化1：防重复布局检查
+        if ([substringToShow isEqualToString:self.lastDisplayedSubstring]) {
+            return; // 内容相同，跳过此次更新
+        }
+        self.lastDisplayedSubstring = substringToShow;
+        
+        // 调用节点的更新方法
+        if ([self->_currentUpdatingAINode respondsToSelector:@selector(updateMessageText:)]) {
+            [self->_currentUpdatingAINode updateMessageText:substringToShow];
+        }
+        
+        // 关键优化2：检查用户是否正在滚动，如果是则暂停更新
+        if (self.userIsDragging) {
+            NSLog(@"用户正在滚动，暂停文本更新");
+            return;
+        }
+        
+        // 关键优化3：智能滚动策略，只在需要时滚动
+        BOOL shouldAutoScroll = [self shouldPerformAutoScroll];
+        NSTimeInterval currentTime = [[NSDate date] timeIntervalSince1970];
+        
+        if (shouldAutoScroll) {
+            // 关键优化：使用节流机制，减少滚动频率
+            NSTimeInterval timeSinceLastScroll = currentTime - self.lastLayoutUpdateTime;
+            if (timeSinceLastScroll >= 0.1) { // 100ms节流
+                [UIView performWithoutAnimation:^{
+                    NSIndexPath *lastIndexPath = [NSIndexPath indexPathForRow:self.messages.count - 1 inSection:0];
+                    [self.tableNode scrollToRowAtIndexPath:lastIndexPath atScrollPosition:UITableViewScrollPositionBottom animated:NO];
+                }];
+                self.lastLayoutUpdateTime = currentTime;
+                NSLog(@"智能滚动：自动滚动到底部");
+            }
+        } else {
+            NSLog(@"智能滚动：用户不在底部，跳过自动滚动");
+        }
     } else {
+        // 关键改进：确保最后几句话完整显示
         if (self.currentStreamingTask == nil) {
+            // 流式更新结束，强制更新一次完整内容，确保最后几句话显示完全
+            NSString *fullText = self.fullResponseBuffer;
+            if ([self->_currentUpdatingAINode respondsToSelector:@selector(updateMessageText:)]) {
+                [self->_currentUpdatingAINode updateMessageText:fullText];
+                
+                // 关键优化：多重保障确保最后内容完全显示
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    // 第一次滚动：立即滚动
+                    [UIView performWithoutAnimation:^{
+                        NSIndexPath *lastIndexPath = [NSIndexPath indexPathForRow:self.messages.count - 1 inSection:0];
+                        [self.tableNode scrollToRowAtIndexPath:lastIndexPath atScrollPosition:UITableViewScrollPositionBottom animated:NO];
+                        NSLog(@"流式更新结束：第一次强制滚动");
+                    }];
+                    
+                    // 第二次滚动：延迟50ms确保内容渲染完成
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                        [UIView performWithoutAnimation:^{
+                            NSIndexPath *lastIndexPath = [NSIndexPath indexPathForRow:self.messages.count - 1 inSection:0];
+                            [self.tableNode scrollToRowAtIndexPath:lastIndexPath atScrollPosition:UITableViewScrollPositionBottom animated:NO];
+                            NSLog(@"流式更新结束：第二次强制滚动确保完整显示");
+                        }];
+                    });
+                    
+                    // 第三次滚动：延迟100ms最终保障
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                        [UIView performWithoutAnimation:^{
+                            NSIndexPath *lastIndexPath = [NSIndexPath indexPathForRow:self.messages.count - 1 inSection:0];
+                            [self.tableNode scrollToRowAtIndexPath:lastIndexPath atScrollPosition:UITableViewScrollPositionBottom animated:NO];
+                            NSLog(@"流式更新结束：第三次强制滚动最终保障");
+                        }];
+                    });
+                });
+            }
+            
             [self stopTypingTimer];
         }
     }
+}
+
+// 辅助方法：生成字符串hash用于缓存key
+- (NSString *)hashForString:(NSString *)string {
+    if (!string || string.length == 0) {
+        return @"empty";
+    }
+    
+    // 生成基于内容长度和部分内容的简单hash
+    NSInteger length = string.length;
+    NSString *prefix = length > 20 ? [string substringToIndex:20] : string;
+    NSString *suffix = length > 20 ? [string substringFromIndex:length - 10] : @"";
+    
+    return [NSString stringWithFormat:@"%ld_%@_%@", (long)length, prefix, suffix];
 }
 
 // 停止并清理定时器
@@ -847,20 +1072,76 @@ static const NSInteger kParserThresholdTextCount = 64;   // 解析阈值
         [self.typingTimer invalidate];
         self.typingTimer = nil;
         
-        // 定时器停止时，意味着动画结束。确保最终的完整文本被保存到CoreData。
-        if (self.currentUpdatingAIMessage && self.fullResponseBuffer.length > 0) {
-            // 获取当前CoreData中的值
-            NSString *currentSavedText = [self.currentUpdatingAIMessage valueForKey:@"content"];
-            // 只有当需要更新时才执行保存，避免不必要的操作
-            if (![currentSavedText isEqualToString:self.fullResponseBuffer]) {
-                [self.currentUpdatingAIMessage setValue:self.fullResponseBuffer forKey:@"content"];
-                [[CoreDataManager sharedManager] saveContext];
+        // 延迟保存，避免过度频繁的保存操作
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (self.currentUpdatingAIMessage && self.fullResponseBuffer.length > 0) {
+                NSString *currentContent = [self.currentUpdatingAIMessage valueForKey:@"content"];
+                if (![currentContent isEqualToString:self.fullResponseBuffer]) {
+                    [self.currentUpdatingAIMessage setValue:self.fullResponseBuffer forKey:@"content"];
+                    [[CoreDataManager sharedManager] saveContext];
+                }
             }
-        }
-        
-        // 完成流式响应
-        [self.chatViewModel finishStreamingResponse];
+            
+            // 关键改进：确保最后几句话完整显示
+            if (self->_currentUpdatingAINode && [self->_currentUpdatingAINode respondsToSelector:@selector(updateMessageText:)]) {
+                NSString *fullText = self.fullResponseBuffer;
+                [self->_currentUpdatingAINode updateMessageText:fullText];
+                
+                // 多重保障滚动到底部，确保最后内容可见
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    // 第一次滚动：立即滚动
+                    [UIView performWithoutAnimation:^{
+                        NSIndexPath *lastIndexPath = [NSIndexPath indexPathForRow:self.messages.count - 1 inSection:0];
+                        [self.tableNode scrollToRowAtIndexPath:lastIndexPath atScrollPosition:UITableViewScrollPositionBottom animated:NO];
+                        NSLog(@"stopTypingTimer：第一次强制滚动");
+                    }];
+                    
+                    // 第二次滚动：延迟50ms确保内容渲染完成
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                        [UIView performWithoutAnimation:^{
+                            NSIndexPath *lastIndexPath = [NSIndexPath indexPathForRow:self.messages.count - 1 inSection:0];
+                            [self.tableNode scrollToRowAtIndexPath:lastIndexPath atScrollPosition:UITableViewScrollPositionBottom animated:NO];
+                            NSLog(@"stopTypingTimer：第二次强制滚动确保完整显示");
+                        }];
+                    });
+                    
+                    // 第三次滚动：延迟100ms最终保障
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                        [UIView performWithoutAnimation:^{
+                            NSIndexPath *lastIndexPath = [NSIndexPath indexPathForRow:self.messages.count - 1 inSection:0];
+                            [self.tableNode scrollToRowAtIndexPath:lastIndexPath atScrollPosition:UITableViewScrollPositionBottom animated:NO];
+                            NSLog(@"stopTypingTimer：第三次强制滚动最终保障");
+                        }];
+                    });
+                });
+            }
+            
+            // 流式更新结束，清空当前更新节点引用和动画状态
+            self->_currentUpdatingAINode = nil;
+            self.isTypingAnimationActive = NO;
+        });
     }
+}
+
+// 新增：计算并缓存节点尺寸
+- (void)calculateAndCacheNodeSize:(NSString *)contentHash {
+    if (!self->_currentUpdatingAINode) return;
+    
+    [UIView performWithoutAnimation:^{
+        [self.tableNode performBatchUpdates:^{
+            // 触发布局，使得当前 cell 的高度被正确计算
+        } completion:^(BOOL finished) {
+            // 使用动态方法调用获取 frame
+            CGSize calculatedSize = CGSizeZero;
+            if ([self->_currentUpdatingAINode respondsToSelector:@selector(frame)]) {
+                CGRect frame = [[self->_currentUpdatingAINode valueForKey:@"frame"] CGRectValue];
+                calculatedSize = frame.size;
+            }
+            if (calculatedSize.width > 0 && calculatedSize.height > 0) {
+                self.nodeSizeCache[contentHash] = [NSValue valueWithCGSize:calculatedSize];
+            }
+        }];
+    }];
 }
 
 // MARK: - 消息添加辅助方法
@@ -872,12 +1153,18 @@ static const NSInteger kParserThresholdTextCount = 64;   // 解析阈值
     [self fetchMessages];
     
     if (self.messages.count > currentCount) {
-        // 同步消息到 SwiftUI 并滚动到底部
-        [self syncMessagesToSwiftUI];
-        [self scrollToBottomAnimated:YES];
-        if (completion) {
-            completion();
-        }
+        NSIndexPath *newIndexPath = [NSIndexPath indexPathForRow:self.messages.count - 1 inSection:0];
+        
+        // 使用performBatchUpdates来确保操作的原子性和动画的流畅性
+        [self.tableNode performBatchUpdates:^{
+            [self.tableNode insertRowsAtIndexPaths:@[newIndexPath] withRowAnimation:UITableViewRowAnimationFade];
+        } completion:^(BOOL finished) {
+            // 在动画完成后滚动到底部并执行回调
+            [self scrollToBottom];
+            if (completion) {
+                completion();
+            }
+        }];
     }
 }
 
@@ -977,7 +1264,7 @@ static const NSInteger kParserThresholdTextCount = 64;   // 解析阈值
 
 // MARK: - 应用程序状态通知处理
 - (void)applicationWillResignActive:(NSNotification *)notification {
-    // 应用即将进入非活动状态（如来电、短信等）
+    // 应用即将进入非活动状态（Come from电、短信等）
     // 可以在这里添加需要的处理逻辑
 }
 
@@ -990,4 +1277,177 @@ static const NSInteger kParserThresholdTextCount = 64;   // 解析阈值
     }
 }
 
+// MARK: - UIScrollViewDelegate 维护粘底状态
+- (void)scrollViewWillBeginDragging:(UIScrollView *)scrollView {
+    self.userIsDragging = YES;
+    self.lastContentOffsetY = scrollView.contentOffset.y;
+}
+
+- (void)scrollViewDidScroll:(UIScrollView *)scrollView {
+    // 智能滚动状态管理
+    CGFloat contentHeight = scrollView.contentSize.height;
+    CGFloat viewHeight = scrollView.bounds.size.height;
+    CGFloat offsetY = scrollView.contentOffset.y;
+    CGFloat tolerance = 50.0; // 容差
+    BOOL nearBottom = (offsetY + viewHeight >= contentHeight - tolerance);
+    
+    // 更新接近底部状态
+    self.isNearBottom = nearBottom;
+    
+    if (!self.userIsDragging) {
+        // 用户没有主动拖动，可能是程序自动滚动
+        self.shouldAutoScrollToBottom = nearBottom;
+    } else {
+        // 用户正在拖动
+        CGFloat deltaY = offsetY - self.lastContentOffsetY;
+        
+        // 如果用户向上滚动（离开底部），取消自动滚动
+        if (deltaY > 10 && !nearBottom) {
+            self.shouldAutoScrollToBottom = NO;
+            NSLog(@"用户向上滚动，取消自动滚动");
+        }
+        // 如果用户向下滚动到接近底部，恢复自动滚动
+        else if (deltaY < -10 && nearBottom) {
+            self.shouldAutoScrollToBottom = YES;
+            NSLog(@"用户向下滚动到底部，恢复自动滚动");
+        }
+        
+        self.lastContentOffsetY = offsetY;
+    }
+}
+
+- (void)scrollViewDidEndDragging:(UIScrollView *)scrollView willDecelerate:(BOOL)decelerate {
+    self.userIsDragging = NO;
+    
+    // 拖动结束后，如果接近底部，恢复自动滚动
+    if (self.isNearBottom) {
+        self.shouldAutoScrollToBottom = YES;
+        NSLog(@"拖动结束，接近底部，恢复自动滚动");
+    }
+}
+
+- (void)scrollViewDidEndDecelerating:(UIScrollView *)scrollView {
+    // 减速结束后，如果接近底部，恢复自动滚动
+    if (self.isNearBottom) {
+        self.shouldAutoScrollToBottom = YES;
+        NSLog(@"减速结束，接近底部，恢复自动滚动");
+    }
+}
+
+// 在流式过程中，若应粘底，则直接拉到底部（无动画，避免抖动）
+- (void)stickToBottomIfNeeded {
+    if (!self.shouldAutoScrollToBottom) return;
+    if (self.messages.count == 0) return;
+    
+    // 关键优化：使用节流机制，避免频繁滚动
+    static NSTimeInterval lastStickTime = 0;
+    NSTimeInterval currentTime = [[NSDate date] timeIntervalSince1970];
+    
+    if (currentTime - lastStickTime < 0.1) { // 100ms节流
+        return;
+    }
+    
+    lastStickTime = currentTime;
+    
+    NSIndexPath *lastIndexPath = [NSIndexPath indexPathForRow:self.messages.count - 1 inSection:0];
+    [self.tableNode scrollToRowAtIndexPath:lastIndexPath atScrollPosition:UITableViewScrollPositionBottom animated:NO];
+}
+
+// 新增：高性能滚动到底部方法
+- (void)scrollToBottomWithThrottling {
+    if (self.messages.count == 0) return;
+    
+    // 关键优化：使用节流机制，避免频繁滚动
+    static NSTimeInterval lastScrollTime = 0;
+    NSTimeInterval currentTime = [[NSDate date] timeIntervalSince1970];
+    
+    if (currentTime - lastScrollTime < 0.05) { // 50ms节流
+        return;
+    }
+    
+    lastScrollTime = currentTime;
+    
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSIndexPath *lastIndexPath = [NSIndexPath indexPathForRow:self.messages.count - 1 inSection:0];
+        [self.tableNode scrollToRowAtIndexPath:lastIndexPath atScrollPosition:UITableViewScrollPositionBottom animated:YES];
+    });
+}
+
+// 提供稳定的测量约束，保证节点在预期宽度下计算高度
+- (ASSizeRange)tableNode:(ASTableNode *)tableNode constrainedSizeForRowAtIndexPath:(NSIndexPath *)indexPath {
+    // 优先使用已经布局过的宽度
+    CGFloat contentWidth = CGRectGetWidth(tableNode.view.bounds);
+    
+    // 回退1：如果此时 view 还未布局，尝试使用 node 自身的 bounds
+    if (contentWidth <= 0) {
+        contentWidth = CGRectGetWidth(tableNode.bounds);
+    }
+    
+    // 回退2：如果依然为0，使用屏幕宽度作为兜底
+    if (contentWidth <= 0) {
+        contentWidth = CGRectGetWidth([UIScreen mainScreen].bounds);
+    }
+    
+    // 扣除安全区（若可用）
+    CGFloat safeInsetSum = 0;
+    if (@available(iOS 11.0, *)) {
+        UIEdgeInsets safeInsets = tableNode.view.safeAreaInsets;
+        safeInsetSum = safeInsets.left + safeInsets.right;
+    }
+    
+    // 我们在 layoutSpec 中使用了左右各 12 的外边距，这里同步扣除
+    CGFloat horizontalMargins = 24.0;
+    
+    // 计算最终宽度，并保证始终为正
+    CGFloat finalWidth = contentWidth - safeInsetSum - horizontalMargins;
+    if (finalWidth < 1.0) {
+        // 如果扣除安全区后不合理，则仅扣除边距
+        finalWidth = contentWidth - horizontalMargins;
+    }
+    if (finalWidth < 1.0) {
+        // 最终兜底，确保为正值
+        finalWidth = 1.0;
+    }
+    
+    CGSize min = CGSizeMake(finalWidth, 1);
+    CGSize max = CGSizeMake(finalWidth, CGFLOAT_MAX);
+    return ASSizeRangeMake(min, max);
+}
+
+- (NSString *)messageAtIndexPath:(NSIndexPath *)indexPath {
+    // 思考行不对应消息内容
+    if (self.isAIThinking && indexPath.row == self.messages.count) {
+        return @"";
+    }
+    if (indexPath.row < 0 || indexPath.row >= self.messages.count) {
+        return @"";
+    }
+    NSManagedObject *message = self.messages[indexPath.row];
+    NSString *content = [message valueForKey:@"content"];
+    return content ?: @"";
+}
+
+- (BOOL)isMessageFromUserAtIndexPath:(NSIndexPath *)indexPath {
+    // 思考行视为AI
+    if (self.isAIThinking && indexPath.row == self.messages.count) {
+        return NO;
+    }
+    if (indexPath.row < 0 || indexPath.row >= self.messages.count) {
+        return NO;
+    }
+    NSManagedObject *message = self.messages[indexPath.row];
+    NSNumber *isFromUser = [message valueForKey:@"isFromUser"];
+    return isFromUser.boolValue;
+}
+
+- (BOOL)isIndexPathCurrentAINode:(NSIndexPath *)indexPath {
+    // 仅当 indexPath 对应当前正在更新的 AI 消息时返回 YES
+    if (!self.currentUpdatingAIMessage) { return NO; }
+    if (indexPath.row < 0 || indexPath.row >= self.messages.count) { return NO; }
+    NSManagedObject *message = self.messages[indexPath.row];
+    // 更稳妥地比较 objectID，避免不同上下文导致的指针不相等
+    return [message.objectID isEqual:self.currentUpdatingAIMessage.objectID];
+}
+
 @end
+

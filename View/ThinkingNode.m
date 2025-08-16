@@ -90,8 +90,8 @@
     dotsLayout.children = self.dotNodes;
     
     // 2. 将圆点布局包裹起来，给它增加内边距（padding）
-    // 这决定了圆点距离气泡边缘的距离
-    ASInsetLayoutSpec *bubbleContentLayout = [ASInsetLayoutSpec insetLayoutSpecWithInsets:UIEdgeInsetsMake(18, 16, 18, 16) child:dotsLayout];
+    // 这决定了圆点距离气泡边缘的距离，调整为与消息单元格一致
+    ASInsetLayoutSpec *bubbleContentLayout = [ASInsetLayoutSpec insetLayoutSpecWithInsets:UIEdgeInsetsMake(12, 16, 12, 16) child:dotsLayout];
     
     // 3. 【关键】将内容（步骤2的结果）和气泡背景组合起来
     // ASBackgroundLayoutSpec 将 bubbleContentLayout 放在上层，将 bubbleNode 作为背景

@@ -86,6 +86,9 @@
     // 使用辅助方法生成新的富文本并赋值
     self.messageTextNode.attributedText = [self attributedStringForText:newMessage];
     
+    // 内容变更后重置缓存尺寸，避免沿用过期的缓存
+    self.cachedSize = CGSizeZero;
+    
     // 当内容改变并可能影响大小时，调用此方法来触发布局重新计算
     [self setNeedsLayout];
 }
