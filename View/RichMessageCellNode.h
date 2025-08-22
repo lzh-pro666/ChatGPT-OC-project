@@ -71,6 +71,16 @@ NS_ASSUME_NONNULL_BEGIN
  */
 - (void)clearHeightCache;
 
+/**
+ * 流式更新完成时的处理
+ */
+- (void)completeStreamingUpdate;
+
+/**
+ * 检查富文本是否完全渲染
+ */
+- (BOOL)isRichTextFullyRendered;
+
 @end
 
 NS_ASSUME_NONNULL_END

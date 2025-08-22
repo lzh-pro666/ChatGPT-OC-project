@@ -13,6 +13,7 @@
 #import "AICodeBlockNode.h"
 #import <CoreText/CoreText.h>
 #import <AsyncDisplayKit/ASButtonNode.h>
+#import <QuartzCore/QuartzCore.h>
 
 // MARK: - 富文本消息节点
 @interface RichMessageCellNode ()
@@ -32,6 +33,14 @@
 @property (nonatomic, strong) NSArray<AIMarkdownBlock *> *markdownBlocks;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *layoutCache;
 @property (nonatomic, assign) BOOL isLayoutStable;
+// 高度缓存：key 由文本hash和宽度组成
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *heightCache;
+// 新增：丝滑渐显相关属性
+@property (nonatomic, assign) BOOL isStreamingMode; // 是否处于流式更新模式
+@property (nonatomic, strong) NSMutableArray<ASDisplayNode *> *streamingNodes; // 流式更新中的节点
+@property (nonatomic, strong) CADisplayLink *displayLink; // 用于丝滑渐显的显示链接
+@property (nonatomic, assign) NSTimeInterval lastAnimationTime; // 上次动画时间
+@property (nonatomic, assign) NSInteger currentStreamingIndex; // 当前流式更新的节点索引
 @end
 
 @implementation RichMessageCellNode
@@ -58,6 +67,14 @@
         _nodeCache = [NSMutableDictionary dictionary];
         _layoutCache = [NSMutableDictionary dictionary];
         _isLayoutStable = YES;
+        _heightCache = [NSMutableDictionary dictionary];
+        
+        // 新增：初始化丝滑渐显相关属性
+        _isStreamingMode = NO;
+        _streamingNodes = [NSMutableArray array];
+        _displayLink = nil;
+        _lastAnimationTime = 0;
+        _currentStreamingIndex = 0;
         
         // 初始化解析器
         _markdownParser = [[AIMarkdownParser alloc] init];
@@ -69,6 +86,19 @@
         
         // 强制首次解析消息内容
         [self parseMessage:message];
+        
+        // 关键改进：确保富文本效果持久化，重新进入聊天界面时不会丢失
+        if (message.length > 0) {
+            // 预计算并缓存富文本高度
+            CGFloat estimatedWidth = [UIScreen mainScreen].bounds.size.width * 0.75 - 24; // 减去边距
+            [self cachedHeightForText:message width:estimatedWidth];
+            
+            // 预渲染富文本节点，确保重新进入时立即显示
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [self setNeedsLayout];
+                [self layoutIfNeeded];
+            });
+        }
         
         NSLog(@"RichMessageCellNode: Initialized with message: %@", message);
     }
@@ -164,11 +194,23 @@
 - (void)updateMessageText:(NSString *)newMessage {
     if (self.isUpdating) return;
     
-    if ((self.currentMessage ?: @"").length == 0 && (newMessage ?: @"").length == 0) {
+    // 关键修复：如果新消息为空，直接返回，不显示任何内容
+    if ((newMessage ?: @"").length == 0) {
+        NSLog(@"RichMessageCellNode: 新消息为空，不更新");
         return;
     }
+    
     if ([self.currentMessage isEqualToString:newMessage]) {
         return;
+    }
+    
+    // 检测是否进入流式模式
+    BOOL enteringStreamingMode = (self.currentMessage.length == 0 && newMessage.length > 0);
+    BOOL continuingStreaming = (newMessage.length > self.currentMessage.length && [newMessage hasPrefix:self.currentMessage]);
+    
+    if (enteringStreamingMode || continuingStreaming) {
+        self.isStreamingMode = YES;
+        NSLog(@"RichMessageCellNode: 进入流式模式，当前长度: %lu -> %lu", (unsigned long)self.currentMessage.length, (unsigned long)newMessage.length);
     }
     
     self.currentMessage = [newMessage copy];
@@ -192,6 +234,20 @@
     } else {
         NSLog(@"RichMessageCellNode: 执行智能增量更新，不重新解析");
         [self updateExistingNodesWithNewText:newMessage];
+    }
+    
+    // 关键修复：确保初始状态正确显示
+    if (enteringStreamingMode) {
+        // 首次进入流式模式时，强制更新一次确保显示
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self setNeedsLayout];
+            [self layoutIfNeeded];
+        });
+    }
+    
+    // 如果是流式模式，启动逐行渐显动画
+    if (self.isStreamingMode) {
+        [self startSmoothFadeInAnimation];
     }
 }
 
@@ -313,9 +369,20 @@
     NSMutableSet<ASDisplayNode *> *addedNodes = [NSMutableSet set]; // 防止重复添加
     
     if (self.parsedResults.count == 0) {
-        // 关键改进：使用统一样式的文本节点，确保所有文本都有稳定的渲染
-        NSLog(@"RichMessageCellNode: 使用统一样式的文本节点");
-        ASTextNode *defaultTextNode = [self getOrCreateTextNodeForText:(self.currentMessage ?: @"")];
+        // 关键修复：如果解析结果为空且消息也为空，则不显示任何内容
+        if (self.currentMessage.length == 0) {
+            NSLog(@"RichMessageCellNode: 消息为空，不显示任何内容");
+            self.renderNodes = @[];
+            self.isUpdating = NO;
+            return;
+        }
+        
+        // 如果消息不为空但解析失败，显示原始消息
+        NSString *displayText = self.currentMessage;
+        NSLog(@"RichMessageCellNode: 解析结果为空但消息不为空，显示原始消息: [%@]", displayText);
+        ASTextNode *defaultTextNode = [self getOrCreateTextNodeForText:displayText];
+        // 关键修复：确保占位符节点完全可见
+        defaultTextNode.alpha = 1.0;
         if (![addedNodes containsObject:defaultTextNode]) {
             [childNodes addObject:defaultTextNode];
             [addedNodes addObject:defaultTextNode];
@@ -367,15 +434,26 @@
         }
     }
     
+    // 关键修复：确保始终有内容显示，避免空白气泡
     if (childNodes.count == 0) {
-        NSLog(@"RichMessageCellNode: 添加占位节点");
-        ASTextNode *placeholderNode = [self getOrCreateTextNodeForText:@"(空消息)"];
+        NSLog(@"RichMessageCellNode: 警告：没有子节点，创建兜底文本节点");
+        NSString *fallbackText = self.currentMessage.length > 0 ? self.currentMessage : @"";
+        if (fallbackText.length == 0) {
+            // 如果消息为空，不显示任何内容
+            NSLog(@"RichMessageCellNode: 消息为空，不显示任何内容");
+            self.renderNodes = @[];
+            self.isUpdating = NO;
+            return;
+        }
+        
+        ASTextNode *fallbackNode = [self getOrCreateTextNodeForText:fallbackText];
         // 关键修复：确保占位符节点可以显示完整内容
-        placeholderNode.style.flexGrow = 1.0;
-        placeholderNode.style.flexShrink = 1.0;
-        if (![addedNodes containsObject:placeholderNode]) {
-            [childNodes addObject:placeholderNode];
-            [addedNodes addObject:placeholderNode];
+        fallbackNode.style.flexGrow = 1.0;
+        fallbackNode.style.flexShrink = 1.0;
+        fallbackNode.alpha = 1.0; // 确保完全可见
+        if (![addedNodes containsObject:fallbackNode]) {
+            [childNodes addObject:fallbackNode];
+            [addedNodes addObject:fallbackNode];
         }
     }
     
@@ -404,6 +482,13 @@
     if (contentChanged) {
         NSLog(@"RichMessageCellNode: 内容发生变化，更新渲染节点");
         self.renderNodes = [childNodes copy];
+        
+        // 关键修复：确保所有节点都可见，避免空白
+        for (ASDisplayNode *node in self.renderNodes) {
+            if (node && node.layer) {
+                node.alpha = 1.0;
+            }
+        }
         
         // 使用智能布局更新，减少抖动
         [self smartLayoutUpdate];
@@ -739,18 +824,18 @@
         return;
     }
     
-    // 关键优化：使用节流机制，减少布局更新频率
+    // 关键优化：使用更激进的节流机制，提高渲染性能
     static NSTimeInterval lastLayoutUpdateTime = 0;
     NSTimeInterval currentTime = [[NSDate date] timeIntervalSince1970];
     
-    if (currentTime - lastLayoutUpdateTime < 0.05) { // 50ms节流
+    if (currentTime - lastLayoutUpdateTime < 0.05) { // 从100ms减少到50ms，提高响应速度
         NSLog(@"RichMessageCellNode: 布局更新过于频繁，跳过此次更新");
         return;
     }
     
     lastLayoutUpdateTime = currentTime;
     
-    // 确保在主线程执行布局更新
+    // 确保在主线程执行布局更新，使用无动画避免TableView弹动
     if ([NSThread isMainThread]) {
         [UIView performWithoutAnimation:^{
             [self setNeedsLayout];
@@ -829,14 +914,15 @@
                                 // 检查布局稳定性
                                 BOOL isStable = [self isLayoutStableForText:newText];
                                 
-                                // 关键改进：降低高度阈值，确保最后几句话能完整显示
+                                // 关键优化：降低高度阈值，提高响应速度
                                 CGFloat heightDifference = fabs(newSize.height - oldSize.height);
-                                if (heightDifference > 5.0 && isStable) { // 从15改为5像素
+                                if (heightDifference > 3.0 && isStable) { // 从5改为3像素，更敏感
                                     NSLog(@"RichMessageCellNode: 高度变化显著且布局稳定 (%.1f -> %.1f)，需要更新布局", oldSize.height, newSize.height);
                                     
                                     textNode.attributedText = newAttributedString;
-                                    [self smartLayoutUpdate];
-                                } else if (heightDifference > 5.0 && !isStable) {
+                                    // 关键优化：减少布局更新频率，避免TableView弹动
+                                    [self performDelayedLayoutUpdate];
+                                } else if (heightDifference > 3.0 && !isStable) {
                                     // 高度变化显著但布局不稳定，标记为不稳定
                                     NSLog(@"RichMessageCellNode: 高度变化显著但布局不稳定 (%.1f -> %.1f)，标记为不稳定", oldSize.height, newSize.height);
                                     self.isLayoutStable = NO;
@@ -865,6 +951,27 @@
     }
     
     NSLog(@"RichMessageCellNode: 智能增量更新完成");
+}
+
+// 新增：延迟布局更新，减少TableView弹动
+- (void)performDelayedLayoutUpdate {
+    // 使用更激进的节流机制，提高渲染性能
+    static NSTimeInterval lastLayoutUpdateTime = 0;
+    NSTimeInterval currentTime = [[NSDate date] timeIntervalSince1970];
+    
+    if (currentTime - lastLayoutUpdateTime < 0.05) { // 从100ms减少到50ms，提高响应速度
+        NSLog(@"RichMessageCellNode: 布局更新过于频繁，跳过此次更新");
+        return;
+    }
+    
+    lastLayoutUpdateTime = currentTime;
+    
+    // 关键优化：减少延迟时间，提高响应速度
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.02 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [UIView performWithoutAnimation:^{
+            [self setNeedsLayout];
+        }];
+    });
 }
 
 // 新增：检查布局是否稳定
@@ -945,6 +1052,226 @@
     return NO;
 }
 
+// MARK: - 丝滑渐显动画核心方法
+
+// 启动丝滑渐显动画
+- (void)startSmoothFadeInAnimation {
+    if (self.displayLink) {
+        return; // 动画已在运行
+    }
+    
+    NSLog(@"RichMessageCellNode: 启动逐行渐显动画");
+    
+    // 重置动画状态
+    self.currentStreamingIndex = 0;
+    self.lastAnimationTime = 0;
+    
+    // 创建CADisplayLink，60fps的流畅动画
+    self.displayLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(updateSmoothAnimation:)];
+    self.displayLink.preferredFramesPerSecond = 60;
+    [self.displayLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+}
+
+// 更新丝滑渐显动画 - 逐行渐显逻辑
+- (void)updateSmoothAnimation:(CADisplayLink *)displayLink {
+    NSTimeInterval currentTime = CACurrentMediaTime();
+    NSTimeInterval deltaTime = currentTime - self.lastAnimationTime;
+    
+    // 关键优化：提高动画频率到30fps，更流畅的体验
+    if (deltaTime < 0.033) { // 约30fps，平衡性能和流畅度
+        return;
+    }
+    
+    self.lastAnimationTime = currentTime;
+    
+    // 获取当前需要渐显的节点
+    if (self.currentStreamingIndex < self.renderNodes.count) {
+        ASDisplayNode *node = self.renderNodes[self.currentStreamingIndex];
+        
+        // 应用逐行渐显效果
+        [self applyLineByLineFadeInToNode:node atIndex:self.currentStreamingIndex];
+        
+        self.currentStreamingIndex++;
+        
+        // 检查是否所有节点都已渐显完成
+        if (self.currentStreamingIndex >= self.renderNodes.count) {
+            [self completeSmoothAnimation];
+        }
+    }
+}
+
+// 应用逐行渐显到指定节点
+- (void)applyLineByLineFadeInToNode:(ASDisplayNode *)node atIndex:(NSInteger)index {
+    // 关键改进：只对新节点应用渐显，已显示的节点保持不变
+    if (node.alpha >= 1.0) {
+        return; // 节点已经完全可见，跳过
+    }
+    
+    // 设置节点初始状态为透明
+    node.alpha = 0.0;
+    
+    // 关键优化：实现真正的逐行遮盖显示效果
+    if ([node isKindOfClass:[ASTextNode class]]) {
+        ASTextNode *textNode = (ASTextNode *)node;
+        [self applyTextNodeRevealAnimation:textNode atIndex:index];
+    } else {
+        // 非文本节点使用传统的渐显动画
+        [self applyTraditionalFadeInAnimation:node atIndex:index];
+    }
+    
+    NSLog(@"RichMessageCellNode: 第 %ld 行渐显完成", (long)index);
+}
+
+// 新增：文本节点的逐行遮盖显示动画
+- (void)applyTextNodeRevealAnimation:(ASTextNode *)textNode atIndex:(NSInteger)index {
+    // 创建遮罩层，实现逐行显示效果
+    CAShapeLayer *maskLayer = [CAShapeLayer layer];
+    maskLayer.frame = textNode.bounds;
+    maskLayer.fillColor = [UIColor blackColor].CGColor; // 黑色表示显示区域
+    
+    // 初始状态：完全隐藏
+    UIBezierPath *initialPath = [UIBezierPath bezierPathWithRect:CGRectMake(0, 0, 0, textNode.bounds.size.height)];
+    maskLayer.path = initialPath.CGPath;
+    
+    // 设置遮罩
+    textNode.layer.mask = maskLayer;
+    
+    // 创建动画：从左到右逐渐显示
+    CABasicAnimation *revealAnimation = [CABasicAnimation animationWithKeyPath:@"path"];
+    revealAnimation.fromValue = (__bridge id)initialPath.CGPath;
+    
+    // 最终状态：完全显示
+    UIBezierPath *finalPath = [UIBezierPath bezierPathWithRect:textNode.bounds];
+    revealAnimation.toValue = (__bridge id)finalPath.CGPath;
+    
+    // 动画配置
+    revealAnimation.duration = 0.3; // 300ms的显示时间
+    revealAnimation.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseOut];
+    revealAnimation.fillMode = kCAFillModeForwards;
+    revealAnimation.removedOnCompletion = NO;
+    
+    // 为每个节点设置不同的延迟，创造逐行出现的效果
+    revealAnimation.beginTime = CACurrentMediaTime() + (index * 0.08); // 每行延迟80ms，更流畅
+    
+    // 应用动画
+    [maskLayer addAnimation:revealAnimation forKey:[NSString stringWithFormat:@"reveal_%ld", (long)index]];
+    
+    // 同时应用透明度动画，增强效果
+    CABasicAnimation *fadeAnimation = [CABasicAnimation animationWithKeyPath:@"opacity"];
+    fadeAnimation.fromValue = @(0.0);
+    fadeAnimation.toValue = @(1.0);
+    fadeAnimation.duration = 0.2; // 200ms的渐显时间
+    fadeAnimation.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseOut];
+    fadeAnimation.fillMode = kCAFillModeForwards;
+    fadeAnimation.removedOnCompletion = NO;
+    fadeAnimation.beginTime = CACurrentMediaTime() + (index * 0.08);
+    
+    [textNode.layer addAnimation:fadeAnimation forKey:[NSString stringWithFormat:@"fade_%ld", (long)index]];
+    
+    // 立即设置最终状态，避免闪烁
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        textNode.alpha = 1.0;
+        maskLayer.path = finalPath.CGPath;
+    });
+}
+
+// 新增：传统渐显动画（用于非文本节点）
+- (void)applyTraditionalFadeInAnimation:(ASDisplayNode *)node atIndex:(NSInteger)index {
+    // 创建渐显动画
+    CABasicAnimation *fadeInAnimation = [CABasicAnimation animationWithKeyPath:@"opacity"];
+    fadeInAnimation.fromValue = @(0.0);
+    fadeInAnimation.toValue = @(1.0);
+    fadeInAnimation.duration = 0.3; // 300ms的渐显时间，更流畅
+    fadeInAnimation.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseOut];
+    fadeInAnimation.fillMode = kCAFillModeForwards; // 保持最终状态
+    fadeInAnimation.removedOnCompletion = NO; // 不移除动画
+    
+    // 为每个节点设置不同的延迟，创造逐行出现的效果
+    fadeInAnimation.beginTime = CACurrentMediaTime() + (index * 0.08); // 每行延迟80ms，更流畅
+    
+    // 应用动画
+    [node.layer addAnimation:fadeInAnimation forKey:[NSString stringWithFormat:@"fadeIn_%ld", (long)index]];
+    
+    // 立即设置最终状态，避免闪烁
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        node.alpha = 1.0;
+    });
+}
+
+// 完成丝滑渐显动画
+- (void)completeSmoothAnimation {
+    NSLog(@"RichMessageCellNode: 逐行渐显动画完成");
+    
+    // 停止显示链接
+    if (self.displayLink) {
+        [self.displayLink invalidate];
+        self.displayLink = nil;
+    }
+    
+    // 退出流式模式
+    self.isStreamingMode = NO;
+    
+    // 确保所有节点都完全可见
+    for (ASDisplayNode *node in self.renderNodes) {
+        node.alpha = 1.0;
+        // 移除所有动画
+        [node.layer removeAllAnimations];
+    }
+    
+    // 触发最终布局更新，确保富文本完全渲染
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self setNeedsLayout];
+        [self layoutIfNeeded];
+    });
+}
+
+// 新增：流式更新完成时的处理
+- (void)completeStreamingUpdate {
+    if (self.isStreamingMode) {
+        NSLog(@"RichMessageCellNode: 流式更新完成，触发最终渲染");
+        
+        // 强制完成所有富文本解析
+        [self forceParseMessage:self.currentMessage];
+        
+        // 确保所有节点都完全可见
+        for (ASDisplayNode *node in self.renderNodes) {
+            node.alpha = 1.0;
+            // 移除所有动画
+            [node.layer removeAllAnimations];
+        }
+        
+        // 退出流式模式
+        self.isStreamingMode = NO;
+        
+        // 停止动画
+        if (self.displayLink) {
+            [self.displayLink invalidate];
+            self.displayLink = nil;
+        }
+    }
+}
+
+// 新增：检查富文本是否完全渲染
+- (BOOL)isRichTextFullyRendered {
+    if (self.parsedResults.count == 0) {
+        return NO;
+    }
+    
+    // 检查所有解析结果是否都有对应的渲染节点
+    if (self.parsedResults.count != self.renderNodes.count) {
+        return NO;
+    }
+    
+    // 检查所有节点是否都完全可见
+    for (ASDisplayNode *node in self.renderNodes) {
+        if (node.alpha < 1.0) {
+            return NO;
+        }
+    }
+    
+    return YES;
+}
+
 // 缓存清理方法
 - (void)clearCache {
     [self.nodeCache removeAllObjects];
@@ -952,8 +1279,69 @@
     NSLog(@"RichMessageCellNode: 缓存已清理");
 }
 
+// MARK: - Public: 高度缓存接口
+
+- (CGFloat)cachedHeightForText:(NSString *)text width:(CGFloat)width {
+    if (text.length == 0 || width <= 1.0) {
+        return 0.0;
+    }
+    // 使用文本hash与宽度生成缓存键
+    NSString *cacheKey = [NSString stringWithFormat:@"%lu_%.1f", (unsigned long)text.hash, width];
+    NSNumber *cached = self.heightCache[cacheKey];
+    if (cached) {
+        return cached.doubleValue;
+    }
+
+    // 计算富文本高度
+    NSAttributedString *attr = [self attributedStringForText:text];
+    CGSize bounding = [attr boundingRectWithSize:CGSizeMake(width, CGFLOAT_MAX)
+                                         options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
+                                         context:nil].size;
+    // 额外内边距：cell 外边距(5+5) + 气泡内边距(10+10)
+    CGFloat extra = 5.0 + 5.0 + 10.0 + 10.0;
+    CGFloat height = ceil(bounding.height + extra);
+    self.heightCache[cacheKey] = @(height);
+    return height;
+}
+
+- (void)clearHeightCache {
+    [self.heightCache removeAllObjects];
+}
+
+// MARK: - Public: 测试与调试辅助
+
+- (void)testSimpleCodeBlock {
+    NSString *demo = @"```\nprint(\"Hello\")\n```";
+    [self forceParseMessage:demo];
+}
+
+- (void)testCodeBlockDisplay {
+    NSString *demo = @"# 标题\n\n这是段落。\n\n```swift\nlet x = 1\nprint(x)\n```\n\n继续正文。";
+    [self forceParseMessage:demo];
+}
+
+- (void)setTestParsedResults {
+    NSMutableAttributedString *p1 = [[NSMutableAttributedString alloc] initWithString:@"这是一个段落测试。"];
+    [p1 addAttributes:@{ NSFontAttributeName: [UIFont systemFontOfSize:16],
+                         NSForegroundColorAttributeName: (self.isFromUser ? [UIColor whiteColor] : [UIColor blackColor]),
+                         NSParagraphStyleAttributeName: [self defaultParagraphStyle]
+    } range:NSMakeRange(0, p1.length)];
+
+    NSAttributedString *code = [[NSAttributedString alloc] initWithString:@"print('code')\nlet a = 1"];
+    ParserResult *r1 = [[ParserResult alloc] initWithAttributedString:p1 isCodeBlock:NO codeBlockLanguage:nil];
+    ParserResult *r2 = [[ParserResult alloc] initWithAttributedString:code isCodeBlock:YES codeBlockLanguage:@"swift"];
+    self.parsedResults = @[r1, r2];
+    [self updateContentNode];
+}
+
 // 在dealloc中清理缓存
 - (void)dealloc {
+    // 停止动画
+    if (self.displayLink) {
+        [self.displayLink invalidate];
+        self.displayLink = nil;
+    }
+    
     [self clearCache];
 }
 

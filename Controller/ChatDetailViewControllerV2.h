@@ -17,7 +17,7 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-@interface ChatDetailViewControllerV2 : ASDKViewController <UITextViewDelegate, ASTableDataSource, ASTableDelegate, CustomMenuViewDelegate, MediaPickerManagerDelegate>
+@interface ChatDetailViewControllerV2 : ASDKViewController <UITextViewDelegate, ASTableDataSource, ASTableDelegate, CustomMenuViewDelegate, MediaPickerManagerDelegate, UIGestureRecognizerDelegate>
 
 @property (nonatomic, strong) id chat;
 @property (nonatomic, strong) UILabel *placeholderLabel;
