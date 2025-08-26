@@ -1,7 +1,7 @@
 #import "APIManager.h"
 
-// OpenAI API endpoint
-static NSString * const kOpenAIAPIEndpoint = @"https://xiaoai.plus/v1/chat/completions";
+// 默认 API endpoint（可被覆盖）
+static NSString * kAPIEndpoint = @"https://xiaoai.plus/v1/chat/completions";
 
 @interface APIManager ()
 
@@ -20,6 +20,16 @@ static NSString * const kOpenAIAPIEndpoint = @"https://xiaoai.plus/v1/chat/compl
 @end
 
 @implementation APIManager
+// BaseURL 切换接口
+- (void)setBaseURL:(NSString *)baseURLString {
+    if (baseURLString.length > 0) {
+        kAPIEndpoint = [baseURLString copy];
+    }
+}
+
+- (NSString *)currentBaseURL {
+    return kAPIEndpoint;
+}
 
 + (instancetype)sharedManager {
     static APIManager *sharedManager = nil;
@@ -55,6 +65,120 @@ static NSString * const kOpenAIAPIEndpoint = @"https://xiaoai.plus/v1/chat/compl
     _apiKey = apiKey;
 }
 
+#pragma mark - Intent Classification (生成/理解)
+
+- (void)classifyIntentWithMessages:(NSArray *)messages
+                       temperature:(double)temperature
+                         completion:(IntentClassificationBlock)completion {
+    if (!self.apiKey || self.apiKey.length == 0) {
+        if (completion) completion(nil, [NSError errorWithDomain:@"com.yourapp.api" code:401 userInfo:@{NSLocalizedDescriptionKey:@"API Key 未设置"}]);
+        return;
+    }
+    NSMutableArray *payload = [messages mutableCopy];
+    NSString *clsPrompt = @"请你根据用户当前的聊天{用户输入的消息和聊天历史}，判断当前用户想要执行图片生成还是图片理解任务的百分比，根据百分比做最终回复，限制回复只能为\"生成\"或\"理解\"";
+    [payload insertObject:@{ @"role": @"system", @"content": clsPrompt } atIndex:0];
+
+    NSDictionary *body = @{ @"model": (self.currentModelName ?: @"gpt-3.5-turbo"),
+                            @"messages": payload,
+                            @"temperature": @(MAX(0.0, MIN(2.0, temperature))) };
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:kAPIEndpoint]];
+    [req setHTTPMethod:@"POST"];
+    [req setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    [req setValue:[NSString stringWithFormat:@"Bearer %@", self.apiKey] forHTTPHeaderField:@"Authorization"];
+    NSData *data = [NSJSONSerialization dataWithJSONObject:body options:0 error:nil];
+    [req setHTTPBody:data];
+
+    NSURLSessionDataTask *task = [self.session dataTaskWithRequest:req completionHandler:^(NSData * _Nullable d, NSURLResponse * _Nullable r, NSError * _Nullable e) {
+        if (e) { dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion(nil, e); }); return; }
+        NSDictionary *obj = d ? [NSJSONSerialization JSONObjectWithData:d options:0 error:nil] : nil;
+        NSString *label = nil;
+        if ([obj isKindOfClass:[NSDictionary class]]) {
+            NSArray *choices = obj[@"choices"];
+            if ([choices isKindOfClass:[NSArray class]] && choices.count > 0) {
+                NSDictionary *msg = choices[0][@"message"];
+                id contentObj = msg[@"content"];
+                if ([contentObj isKindOfClass:[NSString class]]) {
+                    NSString *text = [(NSString *)contentObj stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+                    label = ([text containsString:@"生成"]) ? @"生成" : @"理解";
+                }
+            }
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion(label, nil); });
+    }];
+    [task resume];
+}
+
+#pragma mark - Image Generation (图片生成)
+
+- (void)generateImageWithPrompt:(NSString *)prompt
+                   baseImageURL:(NSString *)baseImageURL
+                     completion:(ImageGenerationBlock)completion {
+    if (!self.apiKey || self.apiKey.length == 0) {
+        if (completion) completion(nil, [NSError errorWithDomain:@"com.yourapp.api" code:401 userInfo:@{NSLocalizedDescriptionKey:@"API Key 未设置"}]);
+        return;
+    }
+    // 新接口与格式
+    NSString *genEndpoint = @"https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
+    NSDictionary *messageContent = @{ @"role": @"user",
+                                      @"content": @[ @{ @"image": (baseImageURL ?: @"") },
+                                                      @{ @"text": (prompt ?: @"") } ] };
+    NSDictionary *body = @{ @"model": @"qwen-image-edit",
+                            @"input": @{ @"messages": @[ messageContent ] },
+                            @"parameters": @{ @"negative_prompt": @"",
+                                               @"watermark": @NO } };
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:genEndpoint]];
+    [req setHTTPMethod:@"POST"];
+    [req setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    [req setValue:[NSString stringWithFormat:@"Bearer %@", self.apiKey] forHTTPHeaderField:@"Authorization"];
+    NSData *data = [NSJSONSerialization dataWithJSONObject:body options:0 error:nil];
+    [req setHTTPBody:data];
+
+    // 调试日志
+    NSLog(@"[ImageGen][Request] endpoint=%@ body=%@", genEndpoint, body);
+
+    NSURLSessionDataTask *task = [self.session dataTaskWithRequest:req completionHandler:^(NSData * _Nullable d, NSURLResponse * _Nullable r, NSError * _Nullable e) {
+        if (e) { dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion(nil, e); }); return; }
+        NSDictionary *obj = d ? [NSJSONSerialization JSONObjectWithData:d options:0 error:nil] : nil;
+        NSLog(@"[ImageGen][Response] %@", obj);
+        // 错误结构：{"code":"InvalidParameter","message":"..."}
+        if ([obj isKindOfClass:[NSDictionary class]] && obj[@"code"]) {
+            NSString *code = obj[@"code"] ?: @"Unknown";
+            NSString *msg = obj[@"message"] ?: @"Unknown error";
+            NSError *apiErr = [NSError errorWithDomain:@"com.yourapp.api" code:422 userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"[%@] %@", code, msg]}];
+            dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion(nil, apiErr); });
+            return;
+        }
+
+        // 成功结构：output.choices[0].message.content[0].image
+        NSMutableArray<NSURL *> *urls = [NSMutableArray array];
+        if ([obj isKindOfClass:[NSDictionary class]]) {
+            NSDictionary *output = obj[@"output"];
+            NSArray *choices = [output isKindOfClass:[NSDictionary class]] ? output[@"choices"] : nil;
+            if ([choices isKindOfClass:[NSArray class]] && choices.count > 0) {
+                NSDictionary *choice0 = choices.firstObject;
+                NSDictionary *message = [choice0 isKindOfClass:[NSDictionary class]] ? choice0[@"message"] : nil;
+                NSArray *contents = [message isKindOfClass:[NSDictionary class]] ? message[@"content"] : nil;
+                if ([contents isKindOfClass:[NSArray class]] && contents.count > 0) {
+                    for (NSDictionary *c in contents) {
+                        NSString *img = c[@"image"];
+                        if ([img isKindOfClass:[NSString class]] && img.length > 0) {
+                            NSURL *u = [NSURL URLWithString:img];
+                            if (u) { [urls addObject:u]; }
+                        }
+                    }
+                }
+            }
+        }
+        if (urls.count == 0) {
+            NSError *pe = [NSError errorWithDomain:@"com.yourapp.api" code:500 userInfo:@{NSLocalizedDescriptionKey:@"未从响应中解析到图片URL"}];
+            dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion(nil, pe); });
+            return;
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion([urls copy], nil); });
+    }];
+    [task resume];
+}
+
 - (NSURLSessionDataTask *)streamingChatCompletionWithMessages:(NSArray *)messages 
                                                streamCallback:(StreamingResponseBlock)callback {
     // 检查 API Key 是否已设置
@@ -69,7 +193,7 @@ static NSString * const kOpenAIAPIEndpoint = @"https://xiaoai.plus/v1/chat/compl
     }
     
     // 创建请求
-    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:kOpenAIAPIEndpoint]];
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:kAPIEndpoint]];
     [request setHTTPMethod:@"POST"];
     [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
     [request setValue:[NSString stringWithFormat:@"Bearer %@", self.apiKey] 
@@ -212,7 +336,7 @@ static NSString * const kOpenAIAPIEndpoint = @"https://xiaoai.plus/v1/chat/compl
     // =================================================================
     
     // 4. 创建请求
-    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:kOpenAIAPIEndpoint]];
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:kAPIEndpoint]];
     [request setHTTPMethod:@"POST"];
     [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
     [request setValue:[NSString stringWithFormat:@"Bearer %@", self.apiKey] forHTTPHeaderField:@"Authorization"];
@@ -408,17 +532,26 @@ didReceiveResponse:(NSURLResponse *)response
                 }
                 
                 // 从 JSON 中提取内容
+                if (![jsonObj isKindOfClass:[NSDictionary class]]) {
+                    continue;
+                }
                 NSArray *choices = jsonObj[@"choices"];
-                if (choices.count > 0) {
-                    NSDictionary *delta = choices[0][@"delta"];
-                    NSString *content = delta[@"content"];
-                    if (content) {
+                if ([choices isKindOfClass:[NSArray class]] && choices.count > 0) {
+                    id deltaObj = choices[0][@"delta"];
+                    if (![deltaObj isKindOfClass:[NSDictionary class]]) {
+                        continue;
+                    }
+                    NSDictionary *delta = (NSDictionary *)deltaObj;
+                    id contentObj = delta[@"content"]; // 兼容 NSNull
+                    if ([contentObj isKindOfClass:[NSString class]]) {
+                        NSString *content = (NSString *)contentObj;
                         [accumulatedContent appendString:content];
-                        
                         // 触发增量回调，报告部分结果
                         dispatch_async(dispatch_get_main_queue(), ^{
                             callback(accumulatedContent, NO, nil);
                         });
+                    } else {
+                        // 忽略 reasoning_content 或 NSNull 等非字符串字段
                     }
                 }
             }

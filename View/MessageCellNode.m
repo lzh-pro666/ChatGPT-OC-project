@@ -37,7 +37,8 @@
     // didLoad 是配置CALayer属性的最佳位置
     _bubbleNode.layer.cornerRadius = 18; // 圆角可以稍微大一点，视觉效果更好
     if (self.isFromUser) {
-        _bubbleNode.backgroundColor = [UIColor colorWithRed:0/255.0 green:122/255.0 blue:255/255.0 alpha:1.0]; // 使用标准的iOS蓝色
+        // 调淡用户气泡蓝色
+        _bubbleNode.backgroundColor = [UIColor colorWithRed:28/255.0 green:142/255.0 blue:255/255.0 alpha:1.0];
         _bubbleNode.layer.maskedCorners = kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner | kCALayerMinXMaxYCorner;
     } else {
         _bubbleNode.backgroundColor = [UIColor colorWithRed:229/255.0 green:229/255.0 blue:234/255.0 alpha:1.0]; // 使用标准的iOS灰色

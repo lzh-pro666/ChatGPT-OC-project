@@ -81,6 +81,17 @@ NS_ASSUME_NONNULL_BEGIN
  */
 - (BOOL)isRichTextFullyRendered;
 
+/**
+ * 流式模式下的快速文本更新（不重新解析Markdown）
+ * @param newMessage 新的消息内容
+ */
+- (void)updateTextContentDirectly:(NSString *)newMessage;
+
+/**
+ * 为气泡追加缩略图附件（UIImage 或 本地文件/HTTP(S) URL），最多展示3个
+ */
+- (void)setAttachments:(NSArray *)attachments;
+
 @end
 
 NS_ASSUME_NONNULL_END

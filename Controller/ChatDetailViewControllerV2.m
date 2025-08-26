@@ -10,19 +10,19 @@
 #import "ThinkingNode.h"
 #import "RichMessageCellNode.h"
 #import "MessageCellNode.h"
+#import "MediaMessageCellNode.h"
 #import "AttachmentThumbnailView.h"
 #import "CoreDataManager.h"
 #import "APIManager.h"
 @import CoreData;
 #import <QuickLookThumbnailing/QuickLookThumbnailing.h>
+#import <AliyunOSSiOS/OSSService.h>
+#import "OSSUploadManager.h"
+#import "ImagePreviewOverlay.h"
 
 // MARK: - 常量定义
-// 每次定时器触发时显示的字数，调小此值可加快打字速度
-static const NSInteger kTypingSpeedCharacterChunk = 2; // 从3减少到2，更平滑的更新
-// 定时器触发间隔，优化为0.05s以获得更流畅的60fps效果
-static const NSTimeInterval kTypingTimerInterval = 0.05; // 从0.1减少到0.05，更流畅的更新
-// 新增：流式富文本渲染节流（越大越慢）
-static const NSTimeInterval kStreamRenderInterval = 0.12; // 120ms，放慢显示节奏
+// 流式富文本渲染：每次更新一行文本
+static const NSTimeInterval kStreamRenderInterval = 0.0; // 0ms，每次网络数据都立即更新
 
 // MARK: - 测试开关
 // 设置为 YES 使用 RichMessageCell（支持富文本），设置为 NO 使用 MessageCellNode（纯文本）
@@ -52,15 +52,13 @@ static const BOOL kUseRichMessageCell = YES;
 @property (nonatomic, strong) MediaPickerManager *mediaPickerManager;
 @property (nonatomic, assign) BOOL isAIThinking; // 驱动UI状态
 
-// MARK: - 打字机动画相关属性
-@property (nonatomic, strong) NSTimer *typingTimer;
+// MARK: - 流式更新相关属性
 @property (nonatomic, strong) NSMutableString *fullResponseBuffer; // 流式响应的完整文本缓冲区
-@property (nonatomic, assign) NSInteger displayedTextLength; // 当前UI上已经显示的文本长度
 @property (nonatomic, weak) id currentUpdatingAINode; // 兼容普通与富文本节点
-@property (nonatomic, strong) NSMutableDictionary<NSString *, NSValue *> *nodeSizeCache; // 新增：节点尺寸缓存
-@property (nonatomic, assign) BOOL isTypingAnimationActive; // 新增：防止重复动画
-@property (nonatomic, assign) NSTimeInterval lastStreamRenderTime; // 新增：流式渲染节流时间戳
-@property (nonatomic, assign) BOOL streamBusy; // 新增：防重复/忙碌标记
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSValue *> *nodeSizeCache; // 节点尺寸缓存
+@property (nonatomic, copy) NSString *lastDisplayedSubstring; // 上次显示的文本内容，用于按行更新检测和避免重复布局
+@property (nonatomic, assign) BOOL streamBusy; // 防重复/忙碌标记
+@property (nonatomic, assign) BOOL isUIUpdatePaused; // 新增：UI更新暂停标志
 
 // MARK: - 网络请求相关属性
 @property (nonatomic, strong) NSURLSessionDataTask *currentStreamingTask;
@@ -68,7 +66,6 @@ static const BOOL kUseRichMessageCell = YES;
 
 // MARK: - 布局优化属性
 @property (nonatomic, assign) NSInteger layoutUpdateCounter;
-@property (nonatomic, copy) NSString *lastDisplayedSubstring; // 缓存上次显示的字符串，避免重复布局
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSValue *> *heightCache; // 高度缓存：key为内容hash，value为CGSize
 @property (nonatomic, assign) NSTimeInterval lastLayoutUpdateTime; // 上次布局更新的时间戳，用于防抖控制
 
@@ -79,17 +76,27 @@ static const BOOL kUseRichMessageCell = YES;
 @property (nonatomic, assign) CGFloat lastContentOffsetY; // 新增：记录上次滚动位置
 @property (nonatomic, assign) NSTimeInterval lastAutoScrollTime; // 新增：滚动节流时间戳
 
+// 上传逻辑已移动至 OSSUploadManager
+// MARK: - 多模态控制
+@property (nonatomic, strong) NSArray<NSURL *> *pendingImageURLs; // 本轮要发送给多模态模型的图片URL
+
 @end
 
 @implementation ChatDetailViewControllerV2
+// MARK: - 缩略图预览
+- (void)handleAttachmentPreview:(NSNotification *)note {
+    id imgObj = note.userInfo[@"image"];
+    NSString *urlStr = note.userInfo[@"url"];
+    UIImage *img = [imgObj isKindOfClass:[UIImage class]] ? (UIImage *)imgObj : nil;
+    NSURL *url = (urlStr.length > 0) ? [NSURL URLWithString:urlStr] : nil;
+    UIView *targetView = self.view;
+    ImagePreviewOverlay *overlay = [[ImagePreviewOverlay alloc] initWithFrame:CGRectZero];
+    [overlay presentInView:targetView image:img imageURL:url];
+}
 
 // MARK: - 生命周期方法
 - (void)viewDidLoad {
     [super viewDidLoad];
-    
-    // 输出当前使用的节点类型，方便测试验证
-    NSLog(@"ChatDetailViewControllerV2: 当前使用 %@ 节点", 
-          kUseRichMessageCell ? @"RichMessageCellNode（富文本）" : @"MessageCellNode（纯文本）");
     
     // 1. 初始化非视图相关的属性
     self.isAIThinking = NO;
@@ -100,7 +107,8 @@ static const BOOL kUseRichMessageCell = YES;
     self.heightCache = [NSMutableDictionary dictionary];
     self.lastDisplayedSubstring = @"";
     self.nodeSizeCache = [NSMutableDictionary dictionary]; // 新增：初始化节点尺寸缓存
-    self.isTypingAnimationActive = NO; // 新增：初始化动画状态
+    self.isUIUpdatePaused = NO; // 新增：初始化UI更新暂停标志
+
     
     // 粘底滚动初始化
     self.shouldAutoScrollToBottom = YES;
@@ -139,10 +147,14 @@ static const BOOL kUseRichMessageCell = YES;
     
     // 6. 设置通知和其他UI状态
     [self updatePlaceholderVisibility];
+    [self updateSendButtonState];
     [self setupNotifications];
     
     // 7. 加载用户设置和API Key
     [self loadUserSettings];
+
+    // 8. 初始化阿里云 OSS（迁移到单例管理器）
+    [[OSSUploadManager sharedManager] setupIfNeeded];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -153,7 +165,7 @@ static const BOOL kUseRichMessageCell = YES;
 
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
-    [self stopTypingTimer];
+
     
     if (self.currentStreamingTask) {
         [[APIManager sharedManager] cancelStreamingTask:self.currentStreamingTask];
@@ -167,12 +179,12 @@ static const BOOL kUseRichMessageCell = YES;
     }
     
     // 重置动画与渲染状态
-    self.isTypingAnimationActive = NO;
+    self.lastDisplayedSubstring = @"";
     self.streamBusy = NO;
 }
 
 - (void)dealloc {
-    [self stopTypingTimer];
+
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     
     // 确保任务被取消
@@ -188,7 +200,11 @@ static const BOOL kUseRichMessageCell = YES;
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(keyboardWillHide:) name:UIKeyboardWillHideNotification object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(applicationWillResignActive:) name:UIApplicationWillResignActiveNotification object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(applicationDidEnterBackground:) name:UIApplicationDidEnterBackgroundNotification object:nil];
+    // 监听缩略图点击的预览请求
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleAttachmentPreview:) name:@"AttachmentPreviewRequested" object:nil];
 }
+
+// OSS 相关实现已迁移至 OSSUploadManager
 
 - (void)loadUserSettings {
     NSString *apiKey = [[NSUserDefaults standardUserDefaults] stringForKey:@"OpenAIAPIKey"];
@@ -451,6 +467,45 @@ static const BOOL kUseRichMessageCell = YES;
     }
 }
 
+// 新增：获取消息的附件信息
+- (NSArray *)attachmentsAtIndexPath:(NSIndexPath *)indexPath {
+    // 思考行不对应消息内容
+    if (self.isAIThinking && indexPath.row == self.messages.count) {
+        return @[];
+    }
+    if (indexPath.row < 0 || indexPath.row >= self.messages.count) {
+        return @[];
+    }
+    
+    NSManagedObject *message = self.messages[indexPath.row];
+    id rawContent = [message valueForKey:@"content"];
+    if (![rawContent isKindOfClass:[NSString class]]) {
+        return @[]; // 防御：content 可能为 NSNull / 非字符串
+    }
+    NSString *content = (NSString *)rawContent;
+    
+    // 从规范化的文本中解析附件链接块：[附件链接：\n- url\n- url\n]
+    if (content.length == 0) return @[];
+    NSRange start = [content rangeOfString:@"[附件链接："];
+    if (start.location == NSNotFound) return @[];
+    NSRange end = [content rangeOfString:@"]" options:0 range:NSMakeRange(start.location, content.length - start.location)];
+    if (end.location == NSNotFound || end.location <= start.location) return @[];
+
+    NSString *block = [content substringWithRange:NSMakeRange(start.location, end.location - start.location)];
+    NSMutableArray<NSURL *> *urls = [NSMutableArray array];
+    [block enumerateLinesUsingBlock:^(NSString * _Nonnull line, BOOL * _Nonnull stop) {
+        NSString *trim = [line stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if ([trim hasPrefix:@"-"]) {
+            NSString *candidate = [[trim substringFromIndex:1] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+            NSURL *u = [NSURL URLWithString:candidate];
+            if (u && ([@"http" isEqualToString:u.scheme] || [@"https" isEqualToString:u.scheme])) {
+                [urls addObject:u];
+            }
+        }
+    }];
+    return [urls copy];
+}
+
 // MARK: - 键盘处理
 - (void)keyboardWillShow:(NSNotification *)notification {
     // 监控键盘的最终位置和大小
@@ -487,18 +542,59 @@ static const BOOL kUseRichMessageCell = YES;
 }
 
 - (void)sendButtonTapped {
-    if (self.inputTextView.text.length == 0) return;
+    if (self.inputTextView.text.length == 0 && self.selectedAttachments.count == 0) return;
     
     NSString *userMessage = [self.inputTextView.text copy];
+    NSArray *attachments = [self.selectedAttachments copy];
+
+    if (attachments.count > 0) {
+        // 先上传附件到 OSS，拿到 URL 后把 URL 附加到文本中（回调在主线程）
+        [[OSSUploadManager sharedManager] uploadAttachments:attachments completion:^(NSArray<NSURL *> * _Nonnull uploadedURLs) {
+            NSMutableString *finalMessage = [NSMutableString stringWithString:userMessage ?: @""];
+            if (uploadedURLs.count > 0) {
+                if (finalMessage.length > 0) {
+                    [finalMessage appendString:@"\n\n"]; 
+                }
+                [finalMessage appendString:@"[附件链接：\n"]; // 规范化格式，便于解析
+                for (NSURL *u in uploadedURLs) {
+                    [finalMessage appendFormat:@"- %@\n", u.absoluteString];
+                }
+                [finalMessage appendString:@"]"]; 
+                // 记录多模态图片（分类后再决定调用理解或生成）
+                self.pendingImageURLs = uploadedURLs;
+                // 仅日志预览多模态 payload
+                NSMutableArray *imageParts = [NSMutableArray array];
+                for (NSURL *u in uploadedURLs) {
+                    [imageParts addObject:@{ @"type": @"image_url",
+                                             @"image_url": @{ @"url": (u.absoluteString ?: @"") } }];
+                }
+                NSString *userText = [self latestUserPlainText] ?: @"";
+                NSDictionary *prompt = @{ @"role": @"user",
+                                           @"content": [imageParts arrayByAddingObject:@{ @"type": @"text",
+                                                                                           @"text": userText }] };
+                NSLog(@"[MultiModal Prompt/Preview] payload=%@", prompt);
+            }
+
+            // 清空输入框和附件（已在主线程）
     self.inputTextView.text = @"";
-    [self textViewDidChange:self.inputTextView]; // 触发输入框高度更新
+            [self.selectedAttachments removeAllObjects];
+            [self updateAttachmentsDisplay];
+            [self textViewDidChange:self.inputTextView];
     [self.inputTextView resignFirstResponder];
     
-    // 使用回调的方法，确保时序正确
-    [self addMessageWithText:userMessage isFromUser:YES completion:^{
-        // 在用户消息插入动画完成后，再开始AI响应
+            [self addMessageWithText:finalMessage attachments:@[] isFromUser:YES completion:^{
+                [self simulateAIResponse];
+            }];
+        }];
+    } else {
+        // 无附件直接发送
+        self.inputTextView.text = @"";
+        [self textViewDidChange:self.inputTextView];
+        [self.inputTextView resignFirstResponder];
+        [self addMessageWithText:userMessage attachments:@[] isFromUser:YES completion:^{
         [self simulateAIResponse];
     }];
+    }
 }
 
 // MARK: - ASTableDataSource & ASTableDelegate
@@ -519,13 +615,23 @@ static const BOOL kUseRichMessageCell = YES;
     
     NSString *message = [self messageAtIndexPath:indexPath];
     BOOL isFromUser = [self isMessageFromUserAtIndexPath:indexPath];
+    NSArray *attachments = [self attachmentsAtIndexPath:indexPath];
+    
     return ^ASCellNode *{
         __strong typeof(weakSelf) strongSelf = weakSelf;
         
         ASCellNode *node;
+        
+        // 优先使用富文本消息气泡，并在其上追加缩略图，保证文本一定显示
         if (kUseRichMessageCell) {
-            // 使用富文本单元格
-            node = [[RichMessageCellNode alloc] initWithMessage:message isFromUser:isFromUser];
+            RichMessageCellNode *rich = [[RichMessageCellNode alloc] initWithMessage:message isFromUser:isFromUser];
+            if (attachments.count > 0 && [rich respondsToSelector:@selector(setAttachments:)]) {
+                [rich setAttachments:attachments];
+            }
+            node = rich;
+        } else if (attachments.count > 0) {
+            // 纯文本样式下也支持多媒体气泡
+            node = [[MediaMessageCellNode alloc] initWithMessage:message isFromUser:isFromUser attachments:attachments];
         } else {
             // 使用普通文本单元格
             node = [[MessageCellNode alloc] initWithMessage:message isFromUser:isFromUser];
@@ -534,8 +640,6 @@ static const BOOL kUseRichMessageCell = YES;
         // 如果是当前在流式更新的 AI 节点，则记录引用
         if (!isFromUser && [strongSelf isIndexPathCurrentAINode:indexPath]) {
             strongSelf->_currentUpdatingAINode = (id)node; // 兼容接口：cachedSize、updateMessageText
-            // 调试输出：确认当前更新节点的类型
-            NSLog(@"设置当前更新节点类型: %@", NSStringFromClass([node class]));
         }
         return node;
     };
@@ -582,7 +686,7 @@ static const BOOL kUseRichMessageCell = YES;
 // 新增：需要时进行锚定粘底
 - (void)anchorScrollToBottomIfNeeded {
     if ([self isNearBottomWithTolerance:80.0]) {
-        [self anchorStickToBottomPreservingOffset];
+        [self scrollToBottomImmediate];
     }
 }
 
@@ -696,6 +800,9 @@ static const BOOL kUseRichMessageCell = YES;
             [self.view layoutIfNeeded]; // 在动画块中执行布局
         }];
     }
+    
+    // 更新发送按钮状态
+    [self updateSendButtonState];
 }
 
 - (void)deleteAttachmentAtIndex:(NSInteger)index {
@@ -795,22 +902,37 @@ static const BOOL kUseRichMessageCell = YES;
         }
     }
     [self updateAttachmentsDisplay];
+    [self updateSendButtonState];
 }
 
 - (void)mediaPicker:(MediaPickerManager *)picker didPickDocumentAtURL:(NSURL *)url {
-    // 替换掉当前已有的附件
+    // 检查是否为网络图片URL
+    if ([url.scheme isEqualToString:@"http"] || [url.scheme isEqualToString:@"https"]) {
+        // 网络图片，直接添加到附件数组
     if (self.selectedAttachments.count < 3) {
         [self.selectedAttachments addObject:url];
     } else {
         NSLog(@"已达到附件数量上限");
+        }
+    } else {
+        // 本地文件，添加到附件数组
+        if (self.selectedAttachments.count < 3) {
+            [self.selectedAttachments addObject:url];
+        } else {
+            NSLog(@"已达到附件数量上限");
+        }
     }
     [self updateAttachmentsDisplay];
+    [self updateSendButtonState];
 }
 
 // MARK: - UITextViewDelegate
 - (void)textViewDidChange:(UITextView *)textView {
     // 更新占位状态
     [self updatePlaceholderVisibility];
+    
+    // 更新发送按钮状态
+    [self updateSendButtonState];
     
     // 关键修复：动态调整输入框高度，支持超过4行后的滑动预览
     CGSize size = [textView sizeThatFits:CGSizeMake(textView.bounds.size.width, MAXFLOAT)];
@@ -843,6 +965,13 @@ static const BOOL kUseRichMessageCell = YES;
 - (void)updatePlaceholderVisibility {
     // 根据输入文本长度更新占位可见性
     self.placeholderLabel.hidden = self.inputTextView.text.length > 0;
+}
+
+- (void)updateSendButtonState {
+    // 有文本或附件时启用发送按钮
+    BOOL hasContent = self.inputTextView.text.length > 0 || self.selectedAttachments.count > 0;
+    self.sendButton.enabled = hasContent;
+    self.sendButton.alpha = hasContent ? 1.0 : 0.5;
 }
 
 // 新增：计算文本视图的行数
@@ -891,29 +1020,24 @@ static const BOOL kUseRichMessageCell = YES;
     return YES;
 }
 
-// MARK: - AI响应与打字机动画
-// 核心逻辑：AI响应与打字机动画 (已修复单次响应重复问题)
+// MARK: - AI流式响应
+// 核心逻辑：AI流式响应处理 (已修复单次响应重复问题)
 - (void)simulateAIResponse {
-    // 防止重复调用
-    if (self.isTypingAnimationActive) {
-        NSLog(@"AI响应已在进行中，跳过重复调用");
-        return;
-    }
+
     
     // 复位流式状态
     self.streamBusy = NO;
-    self.lastStreamRenderTime = 0;
+    self.lastDisplayedSubstring = @"";
     
     // 1. 重置所有相关状态
-    [self stopTypingTimer];
+
     if (self.currentStreamingTask) {
         [[APIManager sharedManager] cancelStreamingTask:self.currentStreamingTask];
     }
     [self.fullResponseBuffer setString:@""];
     self.currentUpdatingAIMessage = nil;
     self->_currentUpdatingAINode = nil;
-    self.displayedTextLength = 0;
-    self.isTypingAnimationActive = YES; // 设置动画状态
+
     
     // 2. 显示"Thinking"状态
     // 步骤 1: 设置状态并计算出"思考视图"将要被插入的位置
@@ -935,10 +1059,172 @@ static const BOOL kUseRichMessageCell = YES;
         }
     }];
     
-    // 3. 构建历史消息并发起API请求
+    // 3. 构建历史消息，并在有图片时先进行“生成/理解”分类
     NSMutableArray *messages = [self buildMessageHistory];
+    NSArray<NSURL *> *imageURLsForThisRound = self.pendingImageURLs;
     __weak typeof(self) weakSelf = self;
-    
+    if (imageURLsForThisRound.count > 0) {
+        // 使用当前文本模型与端点进行分类，T=0.3
+        NSLog(@"[Intent] start classification (T=0.3) using text model=%@", [APIManager sharedManager].currentModelName);
+        [[APIManager sharedManager] classifyIntentWithMessages:messages temperature:0.3 completion:^(NSString * _Nullable label, NSError * _Nullable error) {
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) return;
+            if (error) {
+                NSLog(@"[Intent] classification failed: %@, fallback to 理解", error.localizedDescription);
+                label = @"理解";
+            }
+            NSString *decision = ([label isKindOfClass:[NSString class]] && [label containsString:@"生成"]) ? @"生成" : @"理解";
+            NSLog(@"[Intent] decision=%@", decision);
+
+            if ([decision isEqualToString:@"生成"]) {
+                // 图片生成：取第一张作为 base_image_url，提示词用最近用户纯文本
+                NSString *userText = [strongSelf latestUserPlainText] ?: @"";
+                NSString *baseURL = imageURLsForThisRound.firstObject.absoluteString ?: @"";
+                NSLog(@"[ImageGen] prompt=%@ base=%@", userText, baseURL);
+                // 使用与“理解”相同的 DashScope Key
+                [[APIManager sharedManager] setApiKey:@"sk-ec4677b09f5a4126af3ad17d763c60ed"];
+                [[APIManager sharedManager] generateImageWithPrompt:userText baseImageURL:baseURL completion:^(NSArray<NSURL *> * _Nullable imageURLs, NSError * _Nullable genErr) {
+                    if (genErr || imageURLs.count == 0) {
+                        NSLog(@"[ImageGen] failed: %@", genErr.localizedDescription);
+                        // 移除思考视图并给出失败文案
+                        strongSelf.isAIThinking = NO;
+                        [strongSelf.tableNode performBatchUpdates:^{
+                            [strongSelf.tableNode deleteRowsAtIndexPaths:@[thinkingIndexPath] withRowAnimation:UITableViewRowAnimationNone];
+                        } completion:nil];
+                        NSString *failText = @"抱歉，图片生成失败，请稍后再试。";
+                        [strongSelf addMessageWithText:failText attachments:@[] isFromUser:NO completion:nil];
+                        strongSelf.pendingImageURLs = nil;
+                        return;
+                    }
+                    // 生成成功：拼装带附件链接的AI消息（文本+缩略图）
+                    NSMutableString *aiText = [NSMutableString stringWithString:@"已生成图片。"]; // 文本不含链接块展示
+                    [aiText appendString:@"\n\n[附件链接：\n"]; 
+                    for (NSURL *u in imageURLs) {
+                        [aiText appendFormat:@"- %@\n", u.absoluteString];
+                    }
+                    [aiText appendString:@"]"]; 
+
+                    // 移除思考视图，插入最终AI消息
+                    strongSelf.isAIThinking = NO;
+                    [strongSelf.tableNode performBatchUpdates:^{
+                        [strongSelf.tableNode deleteRowsAtIndexPaths:@[thinkingIndexPath] withRowAnimation:UITableViewRowAnimationNone];
+                    } completion:nil];
+                    [strongSelf addMessageWithText:aiText attachments:@[] isFromUser:NO completion:nil];
+                    strongSelf.pendingImageURLs = nil;
+                }];
+                return; // 生成分支结束
+            }
+
+            // 理解：切换到多模态端点与模型，继续走原有流式路径
+            [[APIManager sharedManager] setBaseURL:@"https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"]; 
+            [[APIManager sharedManager] setApiKey:@"sk-ec4677b09f5a4126af3ad17d763c60ed"];
+            [APIManager sharedManager].currentModelName = @"qvq-plus";
+
+            // 将最后一条用户消息替换为 image_url + text 的数组
+            NSInteger lastUserIndex = -1;
+            for (NSInteger i = messages.count - 1; i >= 0; i--) {
+                NSDictionary *m = messages[i];
+                if ([[m valueForKey:@"role"] isKindOfClass:[NSString class]] && [[m valueForKey:@"role"] isEqualToString:@"user"]) {
+                    lastUserIndex = i; break;
+                }
+            }
+            NSMutableArray *contentParts = [NSMutableArray array];
+            for (NSURL *u in imageURLsForThisRound) {
+                NSString *urlStr = [u isKindOfClass:[NSURL class]] ? (u.absoluteString ?: @"") : @"";
+                if (urlStr.length > 0) {
+                    [contentParts addObject:@{ @"type": @"image_url", @"image_url": @{ @"url": urlStr } }];
+                }
+            }
+            NSString *userText2 = [strongSelf latestUserPlainText] ?: @"";
+            [contentParts addObject:@{ @"type": @"text", @"text": userText2 }];
+            if (lastUserIndex >= 0) {
+                NSDictionary *old = messages[lastUserIndex];
+                NSMutableDictionary *userMsg = [old mutableCopy];
+                userMsg[@"content"] = contentParts;
+                messages[lastUserIndex] = [userMsg copy];
+            } else {
+                [messages addObject:@{ @"role": @"user", @"content": contentParts }];
+            }
+            NSLog(@"[MultiModal] model=qvq-plus images=%@", imageURLsForThisRound);
+
+            strongSelf.currentStreamingTask = [[APIManager sharedManager] streamingChatCompletionWithMessages:messages images:nil streamCallback:^(NSString *partialResponse, BOOL isDone, NSError *error) {
+                __strong typeof(weakSelf) sself = weakSelf;
+                if (!sself) { return; }
+                // 复用原有流式处理UI逻辑
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (error) {
+                        if (error.code != NSURLErrorCancelled) {
+                            NSLog(@"API Error: %@", error.localizedDescription);
+                        }
+                        sself.isAIThinking = NO;
+                        [sself.tableNode performBatchUpdates:^{
+                            [sself.tableNode deleteRowsAtIndexPaths:@[thinkingIndexPath] withRowAnimation:UITableViewRowAnimationNone];
+                        } completion:nil];
+                        sself.streamBusy = NO;
+                        return;
+                    }
+                    [sself.fullResponseBuffer setString:partialResponse];
+                    if (!isDone && [partialResponse isEqualToString:sself.lastDisplayedSubstring]) { return; }
+                    if (sself.isUIUpdatePaused) { return; }
+                    sself.lastDisplayedSubstring = [partialResponse copy];
+                    if (sself.isAIThinking) {
+                        sself.isAIThinking = NO;
+                        sself.currentUpdatingAIMessage = [[CoreDataManager sharedManager] addMessageToChat:sself.chat content:@"" isFromUser:NO];
+                        [sself fetchMessages];
+                        NSIndexPath *finalMessagePath = [NSIndexPath indexPathForRow:sself.messages.count - 1 inSection:0];
+                        RichMessageCellNode *richNode = [[RichMessageCellNode alloc] initWithMessage:partialResponse isFromUser:NO];
+                        sself->_currentUpdatingAINode = richNode;
+                        [richNode setNeedsLayout];
+                        [richNode layoutIfNeeded];
+                        [sself anchorScrollToBottomIfNeeded];
+                        [sself performUpdatesPreservingBottom:^{
+                            [UIView performWithoutAnimation:^{
+                                [sself.tableNode performBatchUpdates:^{
+                                    [sself.tableNode deleteRowsAtIndexPaths:@[thinkingIndexPath] withRowAnimation:UITableViewRowAnimationNone];
+                                    [sself.tableNode insertRowsAtIndexPaths:@[finalMessagePath] withRowAnimation:UITableViewRowAnimationNone];
+                                } completion:nil];
+                            }];
+                        }];
+                        [sself autoStickAfterUpdate];
+                    } else {
+                        if ([sself->_currentUpdatingAINode respondsToSelector:@selector(updateMessageText:)]) {
+                            [sself->_currentUpdatingAINode updateMessageText:partialResponse];
+                        }
+                        [sself performUpdatesPreservingBottom:^{
+                            if ([sself->_currentUpdatingAINode respondsToSelector:@selector(updateMessageText:)]) {
+                                [sself->_currentUpdatingAINode updateMessageText:partialResponse];
+                            }
+                        }];
+                        [sself autoStickAfterUpdate];
+                    }
+                    if (isDone) {
+                        sself.currentStreamingTask = nil;
+                        if (sself.currentUpdatingAIMessage) {
+                            [sself.currentUpdatingAIMessage setValue:sself.fullResponseBuffer forKey:@"content"];
+                            [[CoreDataManager sharedManager] saveContext];
+                        }
+                        if ([sself->_currentUpdatingAINode isKindOfClass:[RichMessageCellNode class]]) {
+                            RichMessageCellNode *richNode2 = (RichMessageCellNode *)sself->_currentUpdatingAINode;
+                            [richNode2 completeStreamingUpdate];
+                        }
+                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                            [sself ensureFinalScrollAndRender];
+                            [sself.tableNode.view layoutIfNeeded];
+                            if (sself.messages.count > 0) {
+                                NSIndexPath *lastIndexPath = [NSIndexPath indexPathForRow:sself.messages.count - 1 inSection:0];
+                                [sself.tableNode scrollToRowAtIndexPath:lastIndexPath atScrollPosition:UITableViewScrollPositionBottom animated:NO];
+                            }
+                        });
+                        sself.streamBusy = NO;
+                        sself.pendingImageURLs = nil;
+                    }
+                });
+            }];
+        }];
+        return; // 已进入分类分支
+    }
+
+    // 无图片：按现状直接走文本流式
     self.currentStreamingTask = [[APIManager sharedManager] streamingChatCompletionWithMessages:messages images:nil streamCallback:^(NSString *partialResponse, BOOL isDone, NSError *error) {
         __strong typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf) { return; }
@@ -952,21 +1238,31 @@ static const BOOL kUseRichMessageCell = YES;
                 [strongSelf.tableNode performBatchUpdates:^{
                     [strongSelf.tableNode deleteRowsAtIndexPaths:@[thinkingIndexPath] withRowAnimation:UITableViewRowAnimationNone];
                 } completion:nil];
-                [strongSelf stopTypingTimer];
+
                 strongSelf.streamBusy = NO;
-                strongSelf.isTypingAnimationActive = NO; // 新增：重置忙碌标记
+
                 return;
             }
             
             // 4. 用最新返回的完整文本直接覆盖缓冲区
             [strongSelf.fullResponseBuffer setString:partialResponse];
             
-            // 渲染节流，放慢显示节奏
-            NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-            if (now - strongSelf.lastStreamRenderTime < kStreamRenderInterval && !isDone) {
-                return;
+            // 富文本逐行显示：每次网络数据都立即更新，实现富文本逐行显示效果
+            // 不再使用时间节流，改为内容变化检测
+            if (!isDone && [partialResponse isEqualToString:strongSelf.lastDisplayedSubstring]) {
+                return; // 内容相同，跳过此次更新
             }
-            strongSelf.lastStreamRenderTime = now;
+            
+            // 关键优化：检查UI更新是否被暂停
+            if (strongSelf.isUIUpdatePaused) {
+                return; // UI更新被暂停，跳过此次更新
+            }
+            
+            // 记录富文本内容变化
+            NSInteger oldLength = strongSelf.lastDisplayedSubstring.length;
+            NSInteger newLength = partialResponse.length;
+            
+            strongSelf.lastDisplayedSubstring = [partialResponse copy];
             
             // 5. 核心UI更新逻辑（统一富文本渲染）
             if (strongSelf.isAIThinking) {
@@ -979,7 +1275,7 @@ static const BOOL kUseRichMessageCell = YES;
                 
                 NSIndexPath *finalMessagePath = [NSIndexPath indexPathForRow:strongSelf.messages.count - 1 inSection:0];
                 
-                // 使用富文本节点
+                // 始终使用富文本节点，保证普通文本也走富文本渲染
                 RichMessageCellNode *richNode = [[RichMessageCellNode alloc] initWithMessage:partialResponse isFromUser:NO];
                 strongSelf->_currentUpdatingAINode = richNode;
                 [richNode setNeedsLayout];
@@ -990,10 +1286,12 @@ static const BOOL kUseRichMessageCell = YES;
                 
                 // 在保持底部距离的前提下完成替换，避免"先扩展再滚动"
                 [strongSelf performUpdatesPreservingBottom:^{
-                    [strongSelf.tableNode performBatchUpdates:^{
-                        [strongSelf.tableNode deleteRowsAtIndexPaths:@[thinkingIndexPath] withRowAnimation:UITableViewRowAnimationNone];
-                        [strongSelf.tableNode insertRowsAtIndexPaths:@[finalMessagePath] withRowAnimation:UITableViewRowAnimationNone];
-                    } completion:nil];
+                    [UIView performWithoutAnimation:^{
+                        [strongSelf.tableNode performBatchUpdates:^{
+                            [strongSelf.tableNode deleteRowsAtIndexPaths:@[thinkingIndexPath] withRowAnimation:UITableViewRowAnimationNone];
+                            [strongSelf.tableNode insertRowsAtIndexPaths:@[finalMessagePath] withRowAnimation:UITableViewRowAnimationNone];
+                        } completion:nil];
+                    }];
                 }];
                 [strongSelf autoStickAfterUpdate];
             } else {
@@ -1029,112 +1327,33 @@ static const BOOL kUseRichMessageCell = YES;
                     [richNode completeStreamingUpdate];
                 }
                 
+                // 关键修复：确保最后几句话完全显示
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    // 强制滚动到底部，确保最后几句话可见
+                    [strongSelf ensureFinalScrollAndRender];
+                    
+                    // 再次强制布局更新，确保所有内容都正确显示
+                    [strongSelf.tableNode.view layoutIfNeeded];
+                    
+                    // 最终滚动确保可见性
+                    if (strongSelf.messages.count > 0) {
+                        NSIndexPath *lastIndexPath = [NSIndexPath indexPathForRow:strongSelf.messages.count - 1 inSection:0];
+                        [strongSelf.tableNode scrollToRowAtIndexPath:lastIndexPath atScrollPosition:UITableViewScrollPositionBottom animated:NO];
+                    }
+                });
+                
                 // 释放忙碌标记
                 strongSelf.streamBusy = NO;
-                strongSelf.isTypingAnimationActive = NO; // 新增：允许下一次发送
+                // 清空多模态图片，避免影响下一轮
+                strongSelf.pendingImageURLs = nil;
             }
         });
     }];
 }
 
-// 启动定时器
-- (void)startTypingTimer {
-    // 如果定时器已在运行或动画未激活，则无需操作
-    if (self.typingTimer.isValid || !self.isTypingAnimationActive) {
-        return;
-    }
-    self.typingTimer = [NSTimer scheduledTimerWithTimeInterval:kTypingTimerInterval // 0.1
-                                                      target:self
-                                                    selector:@selector(typeNextChunk:)
-                                                    userInfo:nil
-                                                     repeats:YES];
-}
 
-// 定时器每次触发时调用的方法 (优化版 - 含高度缓存和防重复机制)
-- (void)typeNextChunk:(NSTimer *)timer {
-    if (!self->_currentUpdatingAINode || !self.currentUpdatingAIMessage || !self.isTypingAnimationActive) {
-        [self stopTypingTimer];
-        return;
-    }
-    
-    if (self.displayedTextLength < self.fullResponseBuffer.length) {
-        self.displayedTextLength += kTypingSpeedCharacterChunk;
-        if (self.displayedTextLength > self.fullResponseBuffer.length) {
-            self.displayedTextLength = self.fullResponseBuffer.length;
-        }
-        NSString *substringToShow = [self.fullResponseBuffer substringToIndex:self.displayedTextLength];
-        
-        // 关键优化1：防重复布局检查
-        if ([substringToShow isEqualToString:self.lastDisplayedSubstring]) {
-            return; // 内容相同，跳过此次更新
-        }
-        self.lastDisplayedSubstring = substringToShow;
-        
-        // 调用节点的更新方法
-        if ([self->_currentUpdatingAINode respondsToSelector:@selector(updateMessageText:)]) {
-            [self->_currentUpdatingAINode updateMessageText:substringToShow];
-        }
-        
-        // 关键优化2：检查用户是否正在滚动，如果是则暂停更新
-        if (self.userIsDragging) {
-            NSLog(@"用户正在滚动，暂停文本更新");
-            return;
-        }
-        
-        // 关键优化3：智能滚动策略，只在需要时滚动
-        BOOL shouldAutoScroll = [self shouldPerformAutoScroll];
-        NSTimeInterval currentTime = [[NSDate date] timeIntervalSince1970];
-        
-        if (shouldAutoScroll) {
-            // 关键优化：使用更激进的节流机制，提高滚动响应速度
-            NSTimeInterval timeSinceLastScroll = currentTime - self.lastLayoutUpdateTime;
-            if (timeSinceLastScroll >= 0.05) { // 从100ms减少到50ms，提高响应速度
-                [UIView performWithoutAnimation:^{
-                    // 关键修复：滚动到当前正在更新的AI消息，而不是最后一条消息
-                    NSIndexPath *currentAINodePath = [self getCurrentAINodeIndexPath];
-                    if (currentAINodePath) {
-                        [self.tableNode scrollToRowAtIndexPath:currentAINodePath atScrollPosition:UITableViewScrollPositionBottom animated:NO];
-                        NSLog(@"智能滚动：滚动到当前AI消息");
-                    } else {
-                        // 如果找不到当前AI节点，则滚动到最后一条消息
-                        NSIndexPath *lastIndexPath = [NSIndexPath indexPathForRow:self.messages.count - 1 inSection:0];
-                        [self.tableNode scrollToRowAtIndexPath:lastIndexPath atScrollPosition:UITableViewScrollPositionBottom animated:NO];
-                        NSLog(@"智能滚动：滚动到最后一条消息");
-                    }
-                }];
-                self.lastLayoutUpdateTime = currentTime;
-                NSLog(@"智能滚动：自动滚动到底部");
-            }
-        } else {
-            NSLog(@"智能滚动：用户不在底部，跳过自动滚动");
-        }
-    } else {
-        // 关键改进：确保最后几句话完整显示
-        if (self.currentStreamingTask == nil) {
-            // 流式更新结束，强制更新一次完整内容，确保最后几句话显示完全
-            NSString *fullText = self.fullResponseBuffer;
-            if ([self->_currentUpdatingAINode respondsToSelector:@selector(updateMessageText:)]) {
-                [self->_currentUpdatingAINode updateMessageText:fullText];
-                
-                // 关键改进：如果是富文本节点，确保完全渲染
-                if (kUseRichMessageCell && [self->_currentUpdatingAINode isKindOfClass:[RichMessageCellNode class]]) {
-                    RichMessageCellNode *richNode = (RichMessageCellNode *)self->_currentUpdatingAINode;
-                    [richNode completeStreamingUpdate];
-                    
-                    // 等待富文本渲染完成后再滚动
-                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                        [self ensureFinalScrollAndRender];
-                    });
-                } else {
-                    // 普通文本节点，直接滚动
-                    [self ensureFinalScrollAndRender];
-                }
-            }
-            
-            [self stopTypingTimer];
-        }
-    }
-}
+
+
 
 // 辅助方法：生成字符串hash用于缓存key
 - (NSString *)hashForString:(NSString *)string {
@@ -1150,48 +1369,7 @@ static const BOOL kUseRichMessageCell = YES;
     return [NSString stringWithFormat:@"%ld_%@_%@", (long)length, prefix, suffix];
 }
 
-// 停止并清理定时器
-- (void)stopTypingTimer {
-    if (self.typingTimer) {
-        [self.typingTimer invalidate];
-        self.typingTimer = nil;
-        
-        // 延迟保存，避免过度频繁的保存操作
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            if (self.currentUpdatingAIMessage && self.fullResponseBuffer.length > 0) {
-                NSString *currentContent = [self.currentUpdatingAIMessage valueForKey:@"content"];
-                if (![currentContent isEqualToString:self.fullResponseBuffer]) {
-                    [self.currentUpdatingAIMessage setValue:self.fullResponseBuffer forKey:@"content"];
-                    [[CoreDataManager sharedManager] saveContext];
-                }
-            }
-            
-            // 关键改进：确保最后几句话完整显示
-            if (self->_currentUpdatingAINode && [self->_currentUpdatingAINode respondsToSelector:@selector(updateMessageText:)]) {
-                NSString *fullText = self.fullResponseBuffer;
-                [self->_currentUpdatingAINode updateMessageText:fullText];
-                
-                // 关键改进：如果是富文本节点，确保完全渲染
-                if (kUseRichMessageCell && [self->_currentUpdatingAINode isKindOfClass:[RichMessageCellNode class]]) {
-                    RichMessageCellNode *richNode = (RichMessageCellNode *)self->_currentUpdatingAINode;
-                    [richNode completeStreamingUpdate];
-                    
-                    // 等待富文本渲染完成后再滚动
-                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                        [self ensureFinalScrollAndRender];
-                    });
-                } else {
-                    // 普通文本节点，直接滚动
-                    [self ensureFinalScrollAndRender];
-                }
-            }
-            
-            // 流式更新结束，清空当前更新节点引用和动画状态
-            self->_currentUpdatingAINode = nil;
-            self.isTypingAnimationActive = NO;
-        });
-    }
-}
+
 
 // 新增：计算并缓存节点尺寸
 - (void)calculateAndCacheNodeSize:(NSString *)contentHash {
@@ -1216,28 +1394,61 @@ static const BOOL kUseRichMessageCell = YES;
 
 // MARK: - 消息添加辅助方法
 - (void)addMessageWithText:(NSString *)text
+                attachments:(NSArray *)attachments
                 isFromUser:(BOOL)isFromUser
                 completion:(nullable void (^)(void))completion {
     NSInteger currentCount = self.messages.count;
-    [[CoreDataManager sharedManager] addMessageToChat:self.chat content:text isFromUser:isFromUser];
+    
+    // 构建消息内容，包含附件信息
+    NSString *messageContent = text;
+    if (attachments.count > 0) {
+        NSMutableString *contentWithAttachments = [NSMutableString stringWithString:text ?: @""];
+        if (contentWithAttachments.length > 0) {
+            [contentWithAttachments appendString:@"\n\n"];
+        }
+        [contentWithAttachments appendString:@"[附件："];
+        
+        for (NSInteger i = 0; i < attachments.count; i++) {
+            id attachment = attachments[i];
+            if (i > 0) [contentWithAttachments appendString:@", "];
+            
+            if ([attachment isKindOfClass:[UIImage class]]) {
+                [contentWithAttachments appendString:@"图片"];
+            } else if ([attachment isKindOfClass:[NSURL class]]) {
+                NSURL *url = attachment;
+                if ([url.scheme isEqualToString:@"http"] || [url.scheme isEqualToString:@"https"]) {
+                    [contentWithAttachments appendString:@"网络图片"];
+                } else {
+                    [contentWithAttachments appendString:@"文件"];
+                }
+            }
+        }
+        [contentWithAttachments appendString:@"]"];
+        
+        messageContent = [contentWithAttachments copy];
+    }
+    
+    [[CoreDataManager sharedManager] addMessageToChat:self.chat content:messageContent isFromUser:isFromUser];
     [self fetchMessages];
     
     if (self.messages.count > currentCount) {
         NSIndexPath *newIndexPath = [NSIndexPath indexPathForRow:self.messages.count - 1 inSection:0];
         
-        // 使用performBatchUpdates来确保操作的原子性和动画的流畅性
-        [self.tableNode performBatchUpdates:^{
-            [self.tableNode insertRowsAtIndexPaths:@[newIndexPath] withRowAnimation:UITableViewRowAnimationFade];
-        } completion:^(BOOL finished) {
-            // 在动画完成后滚动到底部并执行回调
-            if (finished) {
-                // 关键修复：确保滚动到新添加的用户消息
-                [self.tableNode scrollToRowAtIndexPath:newIndexPath atScrollPosition:UITableViewScrollPositionBottom animated:YES];
-                
-                if (completion) {
-                    completion();
+        // 关键优化：使用无动画插入，避免画面闪烁和气泡跳动
+        [UIView performWithoutAnimation:^{
+            [self.tableNode performBatchUpdates:^{
+                [self.tableNode insertRowsAtIndexPaths:@[newIndexPath] withRowAnimation:UITableViewRowAnimationNone];
+            } completion:^(BOOL finished) {
+                // 在动画完成后滚动到底部并执行回调
+                if (finished) {
+                    // 关键修复：确保滚动到新添加的用户消息
+                    [self.tableNode scrollToRowAtIndexPath:newIndexPath atScrollPosition:UITableViewScrollPositionBottom animated:NO];
+                    
+                    if (completion) {
+                        completion();
+                    }
                 }
-            }
+            }];
         }];
     }
 }
@@ -1246,11 +1457,23 @@ static const BOOL kUseRichMessageCell = YES;
 - (NSMutableArray *)buildMessageHistory {
     NSMutableArray *messages = [NSMutableArray array];
     
-    // 添加系统提示
-    if ([APIManager sharedManager].defaultSystemPrompt.length > 0) {
+    // 添加系统提示，包含文件格式支持信息
+    NSString *systemPrompt = [APIManager sharedManager].defaultSystemPrompt ?: @"";
+    if (systemPrompt.length > 0) {
+        // 在系统提示中添加文件格式支持说明
+        NSString *enhancedPrompt = [NSString stringWithFormat:@"%@\n\n支持的文件格式：\n- 图片：JPG、PNG、GIF、WebP等常见图片格式\n- 网络图片：支持HTTP/HTTPS链接的图片\n- 文档：PDF、TXT、DOC、DOCX等文档格式\n\n当用户发送包含附件的消息时，请根据附件内容提供相应的帮助和建议。", systemPrompt];
+        
         [messages addObject:@{
             @"role": @"system",
-            @"content": [APIManager sharedManager].defaultSystemPrompt
+            @"content": enhancedPrompt
+        }];
+    } else {
+        // 如果没有默认系统提示，创建一个包含文件格式支持的提示
+        NSString *defaultPrompt = @"您好！我是ChatGPT，一个AI助手。我可以帮助您解答问题，分析图片和文档内容。\n\n支持的文件格式：\n- 图片：JPG、PNG、GIF、WebP等常见图片格式\n- 网络图片：支持HTTP/HTTPS链接的图片\n- 文档：PDF、TXT、DOC、DOCX等文档格式\n\n当您发送包含附件的消息时，我会根据附件内容提供相应的帮助和建议。请问有什么我可以帮您的吗？";
+        
+        [messages addObject:@{
+            @"role": @"system",
+            @"content": defaultPrompt
         }];
     }
     
@@ -1260,7 +1483,8 @@ static const BOOL kUseRichMessageCell = YES;
     
     for (NSInteger i = startIndex; i < messageCount; i++) {
         NSManagedObject *message = self.messages[i];
-        NSString *content = [message valueForKey:@"content"];
+        id raw = [message valueForKey:@"content"];
+        NSString *content = [raw isKindOfClass:[NSString class]] ? (NSString *)raw : @"";
         BOOL isFromUser = [[message valueForKey:@"isFromUser"] boolValue];
         
         [messages addObject:@{
@@ -1270,6 +1494,24 @@ static const BOOL kUseRichMessageCell = YES;
     }
     
     return messages;
+}
+
+// 提取最近一条用户消息的纯文本（去除附件链接块）
+- (NSString *)latestUserPlainText {
+    for (NSInteger i = self.messages.count - 1; i >= 0; i--) {
+        NSManagedObject *msg = self.messages[i];
+        BOOL isFromUser = [[msg valueForKey:@"isFromUser"] boolValue];
+        if (isFromUser) {
+            id raw = [msg valueForKey:@"content"];
+            NSString *content = [raw isKindOfClass:[NSString class]] ? (NSString *)raw : @"";
+            NSRange marker = [content rangeOfString:@"[附件链接："];
+            if (marker.location != NSNotFound) {
+                content = [content substringToIndex:marker.location];
+            }
+            return [content stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        }
+    }
+    return @"";
 }
 
 // MARK: - 弹窗和提示
@@ -1336,6 +1578,8 @@ static const BOOL kUseRichMessageCell = YES;
     [[NSUserDefaults standardUserDefaults] synchronize];
 }
 
+// 移除网络图片 URL 入口
+
 // MARK: - 应用程序状态通知处理
 - (void)applicationWillResignActive:(NSNotification *)notification {
     // 应用即将进入非活动状态（Come from电、短信等）
@@ -1355,6 +1599,9 @@ static const BOOL kUseRichMessageCell = YES;
 - (void)scrollViewWillBeginDragging:(UIScrollView *)scrollView {
     self.userIsDragging = YES;
     self.lastContentOffsetY = scrollView.contentOffset.y;
+    
+    // 关键优化：用户开始滑动时，暂停所有UI更新
+    [self pauseUIUpdates];
 }
 
 - (void)scrollViewDidScroll:(UIScrollView *)scrollView {
@@ -1398,6 +1645,11 @@ static const BOOL kUseRichMessageCell = YES;
         self.shouldAutoScrollToBottom = YES;
         NSLog(@"拖动结束，接近底部，恢复自动滚动");
     }
+    
+    // 关键优化：用户停止拖动时，恢复UI更新
+    if (!decelerate) {
+        [self resumeUIUpdates];
+    }
 }
 
 - (void)scrollViewDidEndDecelerating:(UIScrollView *)scrollView {
@@ -1406,74 +1658,30 @@ static const BOOL kUseRichMessageCell = YES;
         self.shouldAutoScrollToBottom = YES;
         NSLog(@"减速结束，接近底部，恢复自动滚动");
     }
+    
+    // 关键优化：减速结束后，恢复UI更新
+    [self resumeUIUpdates];
 }
 
 // 在流式过程中，若应粘底，则直接拉到底部（无动画，避免抖动）
 - (void)stickToBottomIfNeeded {
     if (!self.shouldAutoScrollToBottom) return;
-    if (self.messages.count == 0) return;
-    
-    // 关键优化：使用节流机制，避免频繁滚动
-    static NSTimeInterval lastStickTime = 0;
-    NSTimeInterval currentTime = [[NSDate date] timeIntervalSince1970];
-    
-    if (currentTime - lastStickTime < 0.1) { // 100ms节流
-        return;
-    }
-    
-    lastStickTime = currentTime;
-    
-    NSIndexPath *lastIndexPath = [NSIndexPath indexPathForRow:self.messages.count - 1 inSection:0];
-    [self.tableNode scrollToRowAtIndexPath:lastIndexPath atScrollPosition:UITableViewScrollPositionBottom animated:NO];
+    [self.tableNode.view layoutIfNeeded];
+    [self scrollToBottomImmediate];
 }
 
 // 新增：高性能滚动到底部方法
 - (void)scrollToBottomWithThrottling {
-    if (self.messages.count == 0) return;
-    
-    // 关键优化：使用节流机制，避免频繁滚动
-    static NSTimeInterval lastScrollTime = 0;
-    NSTimeInterval currentTime = [[NSDate date] timeIntervalSince1970];
-    
-    if (currentTime - lastScrollTime < 0.05) { // 50ms节流
-        return;
-    }
-    
-    lastScrollTime = currentTime;
-    
-    dispatch_async(dispatch_get_main_queue(), ^{
-        NSIndexPath *lastIndexPath = [NSIndexPath indexPathForRow:self.messages.count - 1 inSection:0];
-        [self.tableNode scrollToRowAtIndexPath:lastIndexPath atScrollPosition:UITableViewScrollPositionBottom animated:YES];
-    });
+    [self scrollToBottom];
 }
 
 // 新增：确保最终滚动和富文本渲染完成
 - (void)ensureFinalScrollAndRender {
     if (self.messages.count == 0) return;
-    
     NSIndexPath *lastIndexPath = [NSIndexPath indexPathForRow:self.messages.count - 1 inSection:0];
-    
-    // 第一次滚动：立即滚动
     [UIView performWithoutAnimation:^{
         [self.tableNode scrollToRowAtIndexPath:lastIndexPath atScrollPosition:UITableViewScrollPositionBottom animated:NO];
-        NSLog(@"流式更新结束：第一次强制滚动");
     }];
-    
-    // 第二次滚动：延迟50ms确保内容渲染完成
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [UIView performWithoutAnimation:^{
-            [self.tableNode scrollToRowAtIndexPath:lastIndexPath atScrollPosition:UITableViewScrollPositionBottom animated:NO];
-            NSLog(@"流式更新结束：第二次强制滚动确保完整显示");
-        }];
-    });
-    
-    // 第三次滚动：延迟100ms最终保障
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [UIView performWithoutAnimation:^{
-            [self.tableNode scrollToRowAtIndexPath:lastIndexPath atScrollPosition:UITableViewScrollPositionBottom animated:NO];
-            NSLog(@"流式更新结束：第三次强制滚动最终保障");
-        }];
-    });
 }
 
 // 新增：获取当前AI节点的索引路径
@@ -1543,8 +1751,15 @@ static const BOOL kUseRichMessageCell = YES;
         return @"";
     }
     NSManagedObject *message = self.messages[indexPath.row];
-    NSString *content = [message valueForKey:@"content"];
-    return content ?: @"";
+    id rawContent = [message valueForKey:@"content"];
+    NSString *content = [rawContent isKindOfClass:[NSString class]] ? (NSString *)rawContent : @"";
+    // 仅用于显示：去掉尾部的附件链接块，不影响存储与AI上下文
+    NSRange marker = [content rangeOfString:@"[附件链接："];
+    if (marker.location != NSNotFound) {
+        content = [content substringToIndex:marker.location];
+        content = [content stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    }
+    return content;
 }
 
 - (BOOL)isMessageFromUserAtIndexPath:(NSIndexPath *)indexPath {
@@ -1627,18 +1842,19 @@ static const BOOL kUseRichMessageCell = YES;
 // 新增：在布局完成后统一执行自动粘底（若接近底部）
 - (void)autoStickAfterUpdate {
     if (![self shouldPerformAutoScroll]) return;
+    
+    // 关键优化：使用同步更新，避免延迟导致的滚动问题
     UITableView *tv = self.tableNode.view;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [tv layoutIfNeeded];
-        NSIndexPath *path = [self getCurrentAINodeIndexPath];
-        if (path) {
-            [UIView performWithoutAnimation:^{
-                [self.tableNode scrollToRowAtIndexPath:path atScrollPosition:UITableViewScrollPositionBottom animated:NO];
-            }];
-        } else {
-            [self anchorStickToBottomPreservingOffset];
-        }
-    });
+    [tv layoutIfNeeded];
+    
+    NSIndexPath *path = [self getCurrentAINodeIndexPath];
+    if (path) {
+        [UIView performWithoutAnimation:^{
+            [self.tableNode scrollToRowAtIndexPath:path atScrollPosition:UITableViewScrollPositionBottom animated:NO];
+        }];
+    } else {
+        [self anchorStickToBottomPreservingOffset];
+    }
 }
 
 // 新增：在近底部时，保持底部对齐地执行更新（避免先扩展再滚动）
@@ -1650,19 +1866,51 @@ static const BOOL kUseRichMessageCell = YES;
         updates();
         return;
     }
-    // 记录可视底部距内容底部的距离
-    CGFloat visibleHeight = tv.bounds.size.height - tv.adjustedContentInset.bottom;
-    CGFloat bottomDistance = tv.contentSize.height - (tv.contentOffset.y + visibleHeight);
-    if (bottomDistance < 0) bottomDistance = 0; // 容错
+    
+    // 关键优化：同步执行更新和滚动，避免"先扩展再滚动"
     [UIView performWithoutAnimation:^{
+        // 1. 执行更新
         updates();
+        
+        // 2. 立即布局
         [tv layoutIfNeeded];
-        // 恢复同样的 bottomDistance，实现同步粘底
-        CGFloat targetOffsetY = tv.contentSize.height - visibleHeight - bottomDistance;
+        
+        // 3. 同步滚动，保持底部对齐
+        CGFloat visibleHeight = tv.bounds.size.height - tv.adjustedContentInset.bottom;
+        CGFloat targetOffsetY = tv.contentSize.height - visibleHeight;
         CGFloat minOffsetY = -tv.adjustedContentInset.top; // 顶部容错
+        
         if (targetOffsetY < minOffsetY) targetOffsetY = minOffsetY;
+        
+        // 4. 立即设置滚动位置，实现同步效果
         [tv setContentOffset:CGPointMake(tv.contentOffset.x, targetOffsetY) animated:NO];
     }];
+}
+
+// 新增：暂停UI更新
+- (void)pauseUIUpdates {
+    self.isUIUpdatePaused = YES;
+    
+    // 暂停富文本节点的动画
+    if (self->_currentUpdatingAINode && [self->_currentUpdatingAINode isKindOfClass:[RichMessageCellNode class]]) {
+        RichMessageCellNode *richNode = (RichMessageCellNode *)self->_currentUpdatingAINode;
+        if ([richNode respondsToSelector:@selector(pauseStreamingAnimation)]) {
+            [richNode performSelector:@selector(pauseStreamingAnimation)];
+        }
+    }
+}
+
+// 新增：恢复UI更新
+- (void)resumeUIUpdates {
+    self.isUIUpdatePaused = NO;
+    
+    // 恢复富文本节点的动画
+    if (self->_currentUpdatingAINode && [self->_currentUpdatingAINode isKindOfClass:[RichMessageCellNode class]]) {
+        RichMessageCellNode *richNode = (RichMessageCellNode *)self->_currentUpdatingAINode;
+        if ([richNode respondsToSelector:@selector(resumeStreamingAnimation)]) {
+            [richNode performSelector:@selector(resumeStreamingAnimation)];
+        }
+    }
 }
 
 @end

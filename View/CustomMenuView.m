@@ -85,7 +85,7 @@
     // 1. 存储锚点
     self.anchorPoint = point;
     
-    // 2. 将自身添� 到父视图并立即设置背景色
+    // 2. 将自身添� 到父视图并立即设置背景色
     self.frame = view.bounds;
     self.backgroundColor = [UIColor colorWithWhite:0 alpha:0];
     [view addSubview:self];
@@ -138,3 +138,4 @@
 }
 
 @end
+

@@ -26,6 +26,8 @@
 @property (nonatomic, assign) NSInteger lastParsedLength;
 @property (nonatomic, copy) NSString *lastParsedText;
 @property (nonatomic, strong) NSArray<ASDisplayNode *> *renderNodes;
+@property (nonatomic, strong) ASDisplayNode *attachmentsContainerNode; // 新增：附件容器
+@property (nonatomic, strong) NSArray *attachmentsData; // 原始附件数据
 @property (nonatomic, strong) NSMutableDictionary<NSString *, ASDisplayNode *> *nodeCache;
 @property (nonatomic, assign) BOOL isUpdating;
 // 恢复AIMarkdownParser以保持富文本效果
@@ -99,8 +101,6 @@
                 [self layoutIfNeeded];
             });
         }
-        
-        NSLog(@"RichMessageCellNode: Initialized with message: %@", message);
     }
     return self;
 }
@@ -113,7 +113,8 @@
     // 设置气泡样式
     _bubbleNode.layer.cornerRadius = 18;
     if (self.isFromUser) {
-        _bubbleNode.backgroundColor = [UIColor colorWithRed:0/255.0 green:122/255.0 blue:255/255.0 alpha:1.0];
+        // 调淡用户气泡蓝色，与 MessageCellNode 一致
+        _bubbleNode.backgroundColor = [UIColor colorWithRed:28/255.0 green:142/255.0 blue:255/255.0 alpha:1.0];
         _bubbleNode.layer.maskedCorners = kCALayerMinXMinYCorner | kCALayerMaxXMinYCorner | kCALayerMinXMaxYCorner;
     } else {
         _bubbleNode.backgroundColor = [UIColor colorWithRed:229/255.0 green:229/255.0 blue:234/255.0 alpha:1.0];
@@ -127,8 +128,8 @@
     // 使用解析生成的内容节点进行布局
     UIColor *backgroundColor = self.isFromUser ? [UIColor systemBlueColor] : [UIColor systemGray5Color];
 
-    // 限制最大宽度为 75%
-    CGFloat maxWidth = constrainedSize.max.width * 0.75;
+    // 限制最大宽度为 85%
+    CGFloat maxWidth = constrainedSize.max.width * 0.85;
     self.contentNode.style.maxWidth = ASDimensionMake(maxWidth);
     
     // 为了避免末尾被裁剪，确保没有强制的 min/max height 限制
@@ -138,7 +139,35 @@
     __weak typeof(self) weakSelf = self;
     self.contentNode.layoutSpecBlock = ^ASLayoutSpec * _Nonnull(__kindof ASDisplayNode * _Nonnull node, ASSizeRange sizeRange) {
         __strong typeof(weakSelf) strongSelf = weakSelf;
-        NSArray<ASDisplayNode *> *children = strongSelf.renderNodes ?: @[];
+        NSMutableArray<ASDisplayNode *> *children = [NSMutableArray array];
+        NSArray<ASDisplayNode *> *renderChildren = strongSelf.renderNodes ?: @[];
+        if (renderChildren.count > 0) {
+            [children addObjectsFromArray:renderChildren];
+        }
+        // 若有附件，追加一个水平容器
+        if (strongSelf.attachmentsData.count > 0) {
+            if (!strongSelf.attachmentsContainerNode) {
+                strongSelf.attachmentsContainerNode = [[ASDisplayNode alloc] init];
+                strongSelf.attachmentsContainerNode.automaticallyManagesSubnodes = YES;
+            }
+            strongSelf.attachmentsContainerNode.layoutSpecBlock = ^ASLayoutSpec * _Nonnull(__kindof ASDisplayNode * _Nonnull node2, ASSizeRange sizeRange2) {
+                NSMutableArray *thumbNodes = [NSMutableArray array];
+                NSInteger max = MIN(strongSelf.attachmentsData.count, 3);
+                for (NSInteger i = 0; i < max; i++) {
+                    id a = strongSelf.attachmentsData[i];
+                    ASDisplayNode *thumb = [strongSelf createAttachmentThumbNode:a];
+                    if (thumb) { [thumbNodes addObject:thumb]; }
+                }
+                if (thumbNodes.count == 0) return [ASLayoutSpec new];
+                ASStackLayoutSpec *row = [ASStackLayoutSpec stackLayoutSpecWithDirection:ASStackLayoutDirectionHorizontal
+                                                                                spacing:8
+                                                                         justifyContent:ASStackLayoutJustifyContentStart
+                                                                             alignItems:ASStackLayoutAlignItemsStart
+                                                                               children:thumbNodes];
+                return row;
+            };
+            [children addObject:strongSelf.attachmentsContainerNode];
+        }
         if (children.count == 0) {
             ASTextNode *placeholderNode = [[ASTextNode alloc] init];
             placeholderNode.attributedText = [strongSelf attributedStringForText:(strongSelf.currentMessage ?: @"")];
@@ -146,7 +175,7 @@
             // 关键修复：确保占位符节点可以显示完整文本
             placeholderNode.style.flexGrow = 1.0;
             placeholderNode.style.flexShrink = 1.0;
-            children = @[placeholderNode];
+            [children addObject:placeholderNode];
         }
         ASStackLayoutSpec *stack = [ASStackLayoutSpec stackLayoutSpecWithDirection:ASStackLayoutDirectionVertical
                                                                            spacing:8
@@ -175,6 +204,67 @@
     // 与 cell 边缘的外边距
     return [ASInsetLayoutSpec insetLayoutSpecWithInsets:UIEdgeInsetsMake(5, 12, 5, 12) child:stackSpec];
 }
+- (ASDisplayNode *)createAttachmentThumbNode:(id)attachment {
+    if ([attachment isKindOfClass:[UIImage class]]) {
+        ASImageNode *n = [[ASImageNode alloc] init];
+        n.image = attachment;
+        n.contentMode = UIViewContentModeScaleAspectFill;
+        n.clipsToBounds = YES;
+        n.cornerRadius = 8.0;
+        n.style.width = ASDimensionMake(180); // 3倍
+        n.style.height = ASDimensionMake(180);
+        // 允许点击
+        [(ASControlNode *)n addTarget:self action:@selector(thumbTapped:) forControlEvents:ASControlNodeEventTouchUpInside];
+        // 标记为本地图片
+        n.accessibilityLabel = @"local-image";
+        return n;
+    } else if ([attachment isKindOfClass:[NSURL class]]) {
+        ASNetworkImageNode *n = [[ASNetworkImageNode alloc] init];
+        n.URL = attachment;
+        n.contentMode = UIViewContentModeScaleAspectFill;
+        n.clipsToBounds = YES;
+        n.cornerRadius = 8.0;
+        n.placeholderFadeDuration = 0.1;
+        n.placeholderColor = [UIColor systemGray5Color];
+        n.style.width = ASDimensionMake(180); // 3倍
+        n.style.height = ASDimensionMake(180);
+        // 允许点击
+        [(ASControlNode *)n addTarget:self action:@selector(thumbTapped:) forControlEvents:ASControlNodeEventTouchUpInside];
+        // 存储URL字符串
+        n.accessibilityLabel = @"remote-url";
+        n.accessibilityValue = ((NSURL *)attachment).absoluteString;
+        return n;
+    }
+    return nil;
+}
+
+// 缩略图点击：通过通知告知控制器展示预览
+- (void)thumbTapped:(ASControlNode *)sender {
+    NSMutableDictionary *info = [NSMutableDictionary dictionary];
+    // 远程：传 URL 字符串；本地：传 UIImage
+    if ([sender isKindOfClass:[ASNetworkImageNode class]]) {
+        ASNetworkImageNode *net = (ASNetworkImageNode *)sender;
+        NSString *urlStr = net.accessibilityValue;
+        if (urlStr.length > 0) {
+            info[@"url"] = urlStr;
+        }
+    } else if ([sender isKindOfClass:[ASImageNode class]]) {
+        ASImageNode *imgNode = (ASImageNode *)sender;
+        if (imgNode.image) {
+            info[@"image"] = imgNode.image;
+        }
+    }
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"AttachmentPreviewRequested"
+                                                        object:self
+                                                      userInfo:info];
+}
+
+#pragma mark - Public
+- (void)setAttachments:(NSArray *)attachments {
+    self.attachmentsData = attachments;
+    // 触发布局
+    [self setNeedsLayout];
+}
 
 // MARK: - Public Methods
 
@@ -196,7 +286,6 @@
     
     // 关键修复：如果新消息为空，直接返回，不显示任何内容
     if ((newMessage ?: @"").length == 0) {
-        NSLog(@"RichMessageCellNode: 新消息为空，不更新");
         return;
     }
     
@@ -210,7 +299,6 @@
     
     if (enteringStreamingMode || continuingStreaming) {
         self.isStreamingMode = YES;
-        NSLog(@"RichMessageCellNode: 进入流式模式，当前长度: %lu -> %lu", (unsigned long)self.currentMessage.length, (unsigned long)newMessage.length);
     }
     
     self.currentMessage = [newMessage copy];
@@ -218,22 +306,25 @@
     // 重置缓存尺寸
     self.cachedSize = CGSizeZero;
     
-    NSLog(@"RichMessageCellNode: updateMessageText called with: [%@]", newMessage);
-    
-    // 关键改进：检查是否需要重新解析以保持富文本效果
-    BOOL shouldReparse = [self shouldReparseText:newMessage];
-    
-    if (shouldReparse) {
-        // 重新解析时重置布局稳定性
-        self.isLayoutStable = YES;
-        
-        // 关键优化：使用无动画更新，减少视觉跳跃
-        [UIView performWithoutAnimation:^{
-            [self forceParseMessage:newMessage];
-        }];
+    // 关键改进：在流式模式下，直接更新文本内容，不启动动画
+    if (self.isStreamingMode) {
+        // 流式模式下，直接更新文本节点，实现按行显示效果
+        [self updateTextContentDirectly:newMessage];
     } else {
-        NSLog(@"RichMessageCellNode: 执行智能增量更新，不重新解析");
-        [self updateExistingNodesWithNewText:newMessage];
+        // 非流式模式：检查是否需要重新解析以保持富文本效果
+        BOOL shouldReparse = [self shouldReparseText:newMessage];
+        
+        if (shouldReparse) {
+            // 重新解析时重置布局稳定性
+            self.isLayoutStable = YES;
+            
+            // 关键优化：使用无动画更新，减少视觉跳跃
+            [UIView performWithoutAnimation:^{
+                [self forceParseMessage:newMessage];
+            }];
+        } else {
+            [self updateExistingNodesWithNewText:newMessage];
+        }
     }
     
     // 关键修复：确保初始状态正确显示
@@ -244,11 +335,6 @@
             [self layoutIfNeeded];
         });
     }
-    
-    // 如果是流式模式，启动逐行渐显动画
-    if (self.isStreamingMode) {
-        [self startSmoothFadeInAnimation];
-    }
 }
 
 // MARK: - Private Methods
@@ -256,46 +342,37 @@
 - (void)parseMessage:(NSString *)message {
     if (self.isUpdating) return;
     
-    NSLog(@"RichMessageCellNode: parseMessage called with: %@", message);
-    
     // 关键优化：将富文本渲染放在后台线程，减少主线程压力
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         // 后台线程：Markdown解析和富文本处理
         NSArray<AIMarkdownBlock *> *markdownBlocks = [self.markdownParser parse:message];
-        
-        NSLog(@"RichMessageCellNode: Markdown 解析完成，共 %lu 个语义块", (unsigned long)markdownBlocks.count);
         
         // 将 Markdown 语义块转换为 ParserResult
         NSMutableArray<ParserResult *> *results = [NSMutableArray array];
         
         // 关键改进：如果解析结果为空，强制创建一个段落结果
         if (markdownBlocks.count == 0 && message.length > 0) {
-            NSLog(@"RichMessageCellNode: 解析结果为空，创建兜底段落");
             NSMutableAttributedString *fallbackText = [[NSMutableAttributedString alloc] initWithString:message];
             [fallbackText addAttributes:@{
                 NSFontAttributeName: [UIFont systemFontOfSize:16],
                 NSForegroundColorAttributeName: self.isFromUser ? [UIColor whiteColor] : [UIColor blackColor],
                 NSParagraphStyleAttributeName: [self defaultParagraphStyle]
             } range:NSMakeRange(0, fallbackText.length)];
+            // 应用内联 Markdown 样式，保持富文本效果
+            [self applyMarkdownStyles:fallbackText];
             
             ParserResult *fallbackResult = [[ParserResult alloc] initWithAttributedString:fallbackText
                                                                                isCodeBlock:NO
                                                                          codeBlockLanguage:nil];
             [results addObject:fallbackResult];
-            NSLog(@"RichMessageCellNode: 创建兜底段落，内容长度: %lu", (unsigned long)message.length);
         } else {
             for (AIMarkdownBlock *block in markdownBlocks) {
                 if (block.type == AIMarkdownBlockTypeCodeBlock) {
                     // 代码块：创建代码块结果
-                    NSLog(@"RichMessageCellNode: 处理代码块，语言: %@，内容长度: %lu", block.language, (unsigned long)block.code.length);
-                    
-                    // 验证参数
                     if (!block.code || block.code.length == 0) {
-                        NSLog(@"RichMessageCellNode: 代码块内容为空，跳过");
                         continue;
                     }
                     
-                    // 创建代码块结果
                     NSAttributedString *codeText = [[NSAttributedString alloc] initWithString:block.code];
                     
                     ParserResult *codeResult = [[ParserResult alloc] initWithAttributedString:codeText
@@ -303,7 +380,6 @@
                                                                              codeBlockLanguage:block.language];
                     [results addObject:codeResult];
                     
-                    NSLog(@"RichMessageCellNode: 创建代码块结果，语言: %@，内容长度: %lu", block.language, (unsigned long)block.code.length);
                 } else if (block.type == AIMarkdownBlockTypeHeading) {
                     // 标题：创建富文本
                     NSMutableAttributedString *headingText = [[NSMutableAttributedString alloc] initWithString:block.text];
@@ -320,7 +396,6 @@
                                                                                  codeBlockLanguage:nil];
                     [results addObject:headingResult];
                     
-                    NSLog(@"RichMessageCellNode: 创建标题，级别: %ld，内容: %@", (long)block.headingLevel, block.text);
                 } else {
                     // 段落：创建富文本
                     NSMutableAttributedString *paragraphText = [[NSMutableAttributedString alloc] initWithString:block.text];
@@ -339,8 +414,6 @@
                                                                                         isCodeBlock:NO
                                                                                   codeBlockLanguage:nil];
                     [results addObject:paragraphResult];
-                    
-                    NSLog(@"RichMessageCellNode: 创建段落，内容长度: %lu", (unsigned long)block.text.length);
                 }
             }
         }
@@ -351,7 +424,6 @@
             self.lastParsedLength = message.length;
             self.lastParsedText = [message copy];
             
-            NSLog(@"RichMessageCellNode: Markdown 解析完成，共 %lu 个结果", (unsigned long)self.parsedResults.count);
             [self updateContentNode];
         });
     });
@@ -362,8 +434,6 @@
     
     self.isUpdating = YES;
     
-    NSLog(@"RichMessageCellNode: updateContentNode 开始，parsedResults count: %lu", (unsigned long)self.parsedResults.count);
-    
     // 使用节点缓存，避免重复创建
     NSMutableArray<ASDisplayNode *> *childNodes = [NSMutableArray array];
     NSMutableSet<ASDisplayNode *> *addedNodes = [NSMutableSet set]; // 防止重复添加
@@ -371,7 +441,6 @@
     if (self.parsedResults.count == 0) {
         // 关键修复：如果解析结果为空且消息也为空，则不显示任何内容
         if (self.currentMessage.length == 0) {
-            NSLog(@"RichMessageCellNode: 消息为空，不显示任何内容");
             self.renderNodes = @[];
             self.isUpdating = NO;
             return;
@@ -379,7 +448,6 @@
         
         // 如果消息不为空但解析失败，显示原始消息
         NSString *displayText = self.currentMessage;
-        NSLog(@"RichMessageCellNode: 解析结果为空但消息不为空，显示原始消息: [%@]", displayText);
         ASTextNode *defaultTextNode = [self getOrCreateTextNodeForText:displayText];
         // 关键修复：确保占位符节点完全可见
         defaultTextNode.alpha = 1.0;
@@ -390,9 +458,6 @@
     } else {
         for (NSInteger i = 0; i < self.parsedResults.count; i++) {
             ParserResult *result = self.parsedResults[i];
-            NSLog(@"RichMessageCellNode: 处理第 %ld 个结果，isCodeBlock: %@, content: %@", 
-                  (long)i, result.isCodeBlock ? @"YES" : @"NO", 
-                  [result.attributedString.string substringToIndex:MIN(50, result.attributedString.string.length)]);
             
             if (result.isCodeBlock) {
                 // 关键改进：智能检查是否需要重新创建代码块节点
@@ -404,7 +469,6 @@
                     if ([existingNode isKindOfClass:[AICodeBlockNode class]]) {
                         // 使用新方法检查代码块内容是否发生变化
                         if (![self isCodeBlockContentChanged:existingNode forResult:result]) {
-                            NSLog(@"RichMessageCellNode: 重用现有代码块节点 %ld", (long)i);
                             codeNode = existingNode;
                         }
                     }
@@ -412,18 +476,15 @@
                 
                 // 如果没有可重用的节点，则创建新的
                 if (!codeNode) {
-                    NSLog(@"RichMessageCellNode: 创建新的代码块节点");
                     codeNode = [self createCodeBlockNode:result];
                 }
                 
                 if (![addedNodes containsObject:codeNode]) {
                     [childNodes addObject:codeNode];
                     [addedNodes addObject:codeNode];
-                    NSLog(@"RichMessageCellNode: 代码块节点已添加到 childNodes，当前数量: %lu", (unsigned long)childNodes.count);
                 }
             } else {
                 // 创建文本节点
-                NSLog(@"RichMessageCellNode: 创建文本节点");
                 ASTextNode *textNode = [self getOrCreateTextNodeForAttributedString:result.attributedString];
                 
                 if (![addedNodes containsObject:textNode]) {
@@ -436,11 +497,9 @@
     
     // 关键修复：确保始终有内容显示，避免空白气泡
     if (childNodes.count == 0) {
-        NSLog(@"RichMessageCellNode: 警告：没有子节点，创建兜底文本节点");
         NSString *fallbackText = self.currentMessage.length > 0 ? self.currentMessage : @"";
         if (fallbackText.length == 0) {
             // 如果消息为空，不显示任何内容
-            NSLog(@"RichMessageCellNode: 消息为空，不显示任何内容");
             self.renderNodes = @[];
             self.isUpdating = NO;
             return;
@@ -457,30 +516,10 @@
         }
     }
     
-    NSLog(@"RichMessageCellNode: 最终 childNodes 数量: %lu, renderNodes 数量: %lu", 
-          (unsigned long)childNodes.count, (unsigned long)self.renderNodes.count);
-    
-    // 关键改进：只有当内容真正改变时才更新，减少不必要的布局
+    // 富文本实时更新：每次都更新渲染节点，确保富文本效果实时显示
     BOOL contentChanged = ![self.renderNodes isEqualToArray:childNodes];
     
-    // 关键优化：检查是否只是节点顺序变化，而不是内容变化
-    if (!contentChanged && self.renderNodes.count == childNodes.count) {
-        BOOL onlyOrderChanged = YES;
-        for (NSInteger i = 0; i < self.renderNodes.count; i++) {
-            if (![self.renderNodes[i] isEqual:childNodes[i]]) {
-                onlyOrderChanged = NO;
-                break;
-            }
-        }
-        if (onlyOrderChanged) {
-            NSLog(@"RichMessageCellNode: 仅节点顺序变化，跳过更新");
-            self.isUpdating = NO;
-            return;
-        }
-    }
-    
     if (contentChanged) {
-        NSLog(@"RichMessageCellNode: 内容发生变化，更新渲染节点");
         self.renderNodes = [childNodes copy];
         
         // 关键修复：确保所有节点都可见，避免空白
@@ -490,27 +529,22 @@
             }
         }
         
-        // 使用智能布局更新，减少抖动
-        [self smartLayoutUpdate];
-    } else {
-        NSLog(@"RichMessageCellNode: 内容未变化，跳过更新");
+        // 富文本实时更新：立即布局，确保效果实时显示
+        [self immediateLayoutUpdate];
     }
     
     self.isUpdating = NO;
-    NSLog(@"RichMessageCellNode: updateContentNode 完成");
 }
 
 
 - (void)forceParseMessage:(NSString *)message {
-    NSLog(@"RichMessageCellNode: forceParseMessage called with: [%@]", message);
-    
-    // 对于强制解析，使用 AIMarkdownParser 进行完整解析
+    // 富文本实时解析：使用 AIMarkdownParser 进行完整解析
     __weak typeof(self) weakSelf = self;
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
         __strong typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf) return;
         
-        // 后台线程：Markdown解析和富文本处理
+        // 后台线程：Markdown解析和富文本处理（高优先级）
         NSArray<AIMarkdownBlock *> *markdownBlocks = [strongSelf.markdownParser parse:(message ?: @"")];
         
         // 将 Markdown 语义块转换为 ParserResult
@@ -524,6 +558,8 @@
                 NSForegroundColorAttributeName: strongSelf.isFromUser ? [UIColor whiteColor] : [UIColor blackColor],
                 NSParagraphStyleAttributeName: [strongSelf defaultParagraphStyle]
             } range:NSMakeRange(0, fallbackText.length)];
+            // 应用内联 Markdown 样式
+            [strongSelf applyMarkdownStyles:fallbackText];
             
             ParserResult *fallbackResult = [[ParserResult alloc] initWithAttributedString:fallbackText
                                                                                isCodeBlock:NO
@@ -588,7 +624,6 @@
             strongSelf.lastParsedLength = message.length;
             strongSelf.lastParsedText = [message copy];
             
-            NSLog(@"RichMessageCellNode: Full parsing completed with %lu results", (unsigned long)strongSelf.parsedResults.count);
             [strongSelf updateContentNode];
             [strongSelf setNeedsLayout];
         });
@@ -611,8 +646,6 @@
 }
 
 - (NSAttributedString *)attributedStringForText:(NSString *)text {
-    NSLog(@"RichMessageCellNode: attributedStringForText called with: %@", text);
-    
     NSMutableParagraphStyle *paragraphStyle = [[NSMutableParagraphStyle alloc] init];
     paragraphStyle.lineSpacing = 5; // 与 MessageCellNode 一致
     paragraphStyle.lineBreakMode = NSLineBreakByWordWrapping;
@@ -629,7 +662,6 @@
         NSForegroundColorAttributeName: textColor
     } range:NSMakeRange(0, attributedString.length)];
     
-    NSLog(@"RichMessageCellNode: created attributedString with length: %lu", (unsigned long)attributedString.length);
     return [attributedString copy];
 }
 
@@ -764,11 +796,8 @@
     // 检查缓存中是否已存在相同的代码块节点
     ASDisplayNode *cachedNode = self.nodeCache[cacheKey];
     if (cachedNode) {
-        NSLog(@"RichMessageCellNode: 使用缓存的代码块节点，语言: %@", language);
         return cachedNode;
     }
-    
-    NSLog(@"RichMessageCellNode: 创建新的代码块节点，语言: %@，内容: %@", language, [codeText substringToIndex:MIN(100, codeText.length)]);
     
     // 使用新的 AICodeBlockNode
     AICodeBlockNode *codeBlockNode = [[AICodeBlockNode alloc] initWithCode:codeText 
@@ -777,8 +806,6 @@
     
     // 缓存新创建的代码块节点
     self.nodeCache[cacheKey] = codeBlockNode;
-    
-    NSLog(@"RichMessageCellNode: 代码块节点创建完成并已缓存");
     
     return codeBlockNode;
 }
@@ -808,19 +835,33 @@
     BOOL languageChanged = ![existingLanguage isEqualToString:result.codeBlockLanguage];
     
     if (contentChanged || languageChanged) {
-        NSLog(@"RichMessageCellNode: 代码块内容发生变化 - 内容: %@, 语言: %@", 
-              contentChanged ? @"YES" : @"NO", 
-              languageChanged ? @"YES" : @"NO");
         return YES;
     }
     
     return NO;
 }
 
-// 新增：智能布局更新
+// 新增：富文本实时布局更新（无节流，确保实时显示）
+- (void)immediateLayoutUpdate {
+    // 富文本实时更新：立即布局，不进行节流
+    if ([NSThread isMainThread]) {
+        [UIView performWithoutAnimation:^{
+            [self setNeedsLayout];
+            [self layoutIfNeeded];
+        }];
+    } else {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [UIView performWithoutAnimation:^{
+                [self setNeedsLayout];
+                [self layoutIfNeeded];
+            }];
+        });
+    }
+}
+
+// 新增：智能布局更新（保留原有功能，用于非实时场景）
 - (void)smartLayoutUpdate {
     if (!self.isLayoutStable) {
-        NSLog(@"RichMessageCellNode: 布局不稳定，跳过更新");
         return;
     }
     
@@ -829,7 +870,6 @@
     NSTimeInterval currentTime = [[NSDate date] timeIntervalSince1970];
     
     if (currentTime - lastLayoutUpdateTime < 0.05) { // 从100ms减少到50ms，提高响应速度
-        NSLog(@"RichMessageCellNode: 布局更新过于频繁，跳过此次更新");
         return;
     }
     
@@ -861,8 +901,6 @@
 - (void)updateExistingNodesWithNewText:(NSString *)newText {
     if (self.parsedResults.count == 0) return;
     
-    NSLog(@"RichMessageCellNode: 开始智能增量更新，当前解析结果数量: %lu", (unsigned long)self.parsedResults.count);
-    
     // 关键改进：找到最后一个文本节点（非代码块）进行更新
     for (NSInteger i = self.parsedResults.count - 1; i >= 0; i--) {
         ParserResult *result = self.parsedResults[i];
@@ -878,8 +916,6 @@
                     
                     // 关键改进：降低更新阈值，确保最后几句话能完整显示
                     if (appendedText.length > 1) { // 从5改为1，确保及时更新
-                        NSLog(@"RichMessageCellNode: 智能更新文本节点 %ld，追加内容长度: %lu", 
-                              (long)i, (unsigned long)appendedText.length);
                         
                         // 创建新的富文本属性字符串
                         NSMutableAttributedString *newAttributedString = [[NSMutableAttributedString alloc] initWithString:newText];
@@ -917,40 +953,33 @@
                                 // 关键优化：降低高度阈值，提高响应速度
                                 CGFloat heightDifference = fabs(newSize.height - oldSize.height);
                                 if (heightDifference > 3.0 && isStable) { // 从5改为3像素，更敏感
-                                    NSLog(@"RichMessageCellNode: 高度变化显著且布局稳定 (%.1f -> %.1f)，需要更新布局", oldSize.height, newSize.height);
                                     
                                     textNode.attributedText = newAttributedString;
                                     // 关键优化：减少布局更新频率，避免TableView弹动
                                     [self performDelayedLayoutUpdate];
                                 } else if (heightDifference > 3.0 && !isStable) {
                                     // 高度变化显著但布局不稳定，标记为不稳定
-                                    NSLog(@"RichMessageCellNode: 高度变化显著但布局不稳定 (%.1f -> %.1f)，标记为不稳定", oldSize.height, newSize.height);
                                     self.isLayoutStable = NO;
                                     textNode.attributedText = newAttributedString;
                                 } else {
                                     // 高度变化微小，只更新文本内容，不触发布局
                                     textNode.attributedText = newAttributedString;
-                                    NSLog(@"RichMessageCellNode: 高度变化微小 (%.1f -> %.1f)，只更新文本内容", oldSize.height, newSize.height);
                                 }
                             }
                         }
                     } else {
-                        NSLog(@"RichMessageCellNode: 追加内容过短 (%lu)，跳过更新", (unsigned long)appendedText.length);
+                        // 追加内容过短，跳过更新
                     }
                 } else {
                     // 不是追加内容，可能是重新开始输入
-                    NSLog(@"RichMessageCellNode: 检测到重新开始输入，跳过增量更新");
                 }
             } else {
                 // 新文本比当前内容短，可能是删除操作，跳过
-                NSLog(@"RichMessageCellNode: 检测到删除操作，跳过增量更新");
             }
             
             break; // 只更新最后一个文本节点
         }
     }
-    
-    NSLog(@"RichMessageCellNode: 智能增量更新完成");
 }
 
 // 新增：延迟布局更新，减少TableView弹动
@@ -960,7 +989,6 @@
     NSTimeInterval currentTime = [[NSDate date] timeIntervalSince1970];
     
     if (currentTime - lastLayoutUpdateTime < 0.05) { // 从100ms减少到50ms，提高响应速度
-        NSLog(@"RichMessageCellNode: 布局更新过于频繁，跳过此次更新");
         return;
     }
     
@@ -1060,8 +1088,6 @@
         return; // 动画已在运行
     }
     
-    NSLog(@"RichMessageCellNode: 启动逐行渐显动画");
-    
     // 重置动画状态
     self.currentStreamingIndex = 0;
     self.lastAnimationTime = 0;
@@ -1118,8 +1144,6 @@
         // 非文本节点使用传统的渐显动画
         [self applyTraditionalFadeInAnimation:node atIndex:index];
     }
-    
-    NSLog(@"RichMessageCellNode: 第 %ld 行渐显完成", (long)index);
 }
 
 // 新增：文本节点的逐行遮盖显示动画
@@ -1200,8 +1224,6 @@
 
 // 完成丝滑渐显动画
 - (void)completeSmoothAnimation {
-    NSLog(@"RichMessageCellNode: 逐行渐显动画完成");
-    
     // 停止显示链接
     if (self.displayLink) {
         [self.displayLink invalidate];
@@ -1228,8 +1250,6 @@
 // 新增：流式更新完成时的处理
 - (void)completeStreamingUpdate {
     if (self.isStreamingMode) {
-        NSLog(@"RichMessageCellNode: 流式更新完成，触发最终渲染");
-        
         // 强制完成所有富文本解析
         [self forceParseMessage:self.currentMessage];
         
@@ -1248,6 +1268,14 @@
             [self.displayLink invalidate];
             self.displayLink = nil;
         }
+        
+        // 最终布局更新（无动画）
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [UIView performWithoutAnimation:^{
+                [self setNeedsLayout];
+                [self layoutIfNeeded];
+            }];
+        });
     }
 }
 
@@ -1276,7 +1304,6 @@
 - (void)clearCache {
     [self.nodeCache removeAllObjects];
     [self.layoutCache removeAllObjects];
-    NSLog(@"RichMessageCellNode: 缓存已清理");
 }
 
 // MARK: - Public: 高度缓存接口
@@ -1343,6 +1370,75 @@
     }
     
     [self clearCache];
+}
+
+// MARK: - 按行更新优化方法
+
+// 新增：检测文本中是否有新的完整行
+- (BOOL)detectNewLinesInText:(NSString *)newText {
+    if (!newText || newText.length == 0) {
+        return NO;
+    }
+    
+    // 计算新文本中的行数
+    NSArray<NSString *> *newLines = [newText componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
+    NSArray<NSString *> *currentLines = [self.currentMessage componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
+    
+    // 如果新文本的行数比当前文本多，说明有新行
+    if (newLines.count > currentLines.count) {
+        return YES;
+    }
+    
+    // 检查是否有行内容发生变化（长度增加超过阈值）
+    if (newLines.count == currentLines.count) {
+        for (NSInteger i = 0; i < newLines.count; i++) {
+            if (i < currentLines.count) {
+                NSString *newLine = newLines[i];
+                NSString *currentLine = currentLines[i];
+                
+                // 如果某一行长度增加超过5个字符，认为有新内容（降低阈值，提高响应性）
+                if (newLine.length > currentLine.length + 5) {
+                    return YES;
+                }
+            }
+        }
+    }
+    
+    return NO;
+}
+
+- (void)updateTextContentDirectly:(NSString *)newMessage {
+    if (!newMessage || newMessage.length == 0) {
+        return;
+    }
+    
+    // 更新当前消息
+    self.currentMessage = [newMessage copy];
+    
+    // 富文本逐行显示：每次都进行富文本解析，确保实时显示富文本效果
+    [self forceParseMessage:newMessage];
+    
+    // 强制布局更新，确保UI立即反映变化（无动画）
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [UIView performWithoutAnimation:^{
+            [self setNeedsLayout];
+            [self layoutIfNeeded];
+        }];
+    });
+}
+
+// 新增：暂停流式更新动画
+- (void)pauseStreamingAnimation {
+    if (self.displayLink) {
+        [self.displayLink setPaused:YES];
+    }
+}
+
+// 新增：恢复流式更新动画
+- (void)resumeStreamingAnimation {
+    if (self.displayLink) {
+        [self.displayLink setPaused:NO];
+    }
 }
 
 @end
