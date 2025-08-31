@@ -137,8 +137,9 @@
         return stack;
     };
 
-    // 外层内边距（文本与气泡边距）
-    ASInsetLayoutSpec *contentInset = [ASInsetLayoutSpec insetLayoutSpecWithInsets:UIEdgeInsetsMake(10, 15, 10, 15) child:self.contentNode];
+    // 外层内边距（文本与气泡边距）。底部额外+1，避免首帧渲染时被遮挡或裁剪
+    UIEdgeInsets insets = UIEdgeInsetsMake(10, 15, 11, 15);
+    ASInsetLayoutSpec *contentInset = [ASInsetLayoutSpec insetLayoutSpecWithInsets:insets child:self.contentNode];
 
     // 气泡背景
     ASBackgroundLayoutSpec *backgroundSpec = [ASBackgroundLayoutSpec backgroundLayoutSpecWithChild:contentInset background:self.bubbleNode];
@@ -150,8 +151,9 @@
                                                                         alignItems:ASStackLayoutAlignItemsStart
                                                                           children:@[backgroundSpec]];
 
-    // 与 cell 边缘的外边距
-    return [ASInsetLayoutSpec insetLayoutSpecWithInsets:UIEdgeInsetsMake(5, 12, 5, 12) child:stackSpec];
+    // 与 cell 边缘的外边距。底部额外+1，避免在进入界面时附件气泡底部被裁剪
+    UIEdgeInsets cellInsets = UIEdgeInsetsMake(5, 12, 6, 12);
+    return [ASInsetLayoutSpec insetLayoutSpecWithInsets:cellInsets child:stackSpec];
 }
 
 // MARK: - Public Methods

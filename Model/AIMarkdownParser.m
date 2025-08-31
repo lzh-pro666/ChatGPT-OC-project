@@ -43,8 +43,8 @@
     
     NSMutableString *para = [NSMutableString string];
     
-    // 代码块围栏正则表达式
-    NSRegularExpression *fence = [NSRegularExpression regularExpressionWithPattern:@"^```\\s*([A-Za-z0-9+-]*)\\s*$" options:0 error:nil];
+    // 代码块围栏正则表达式（允许前导空格 / 制表符，兼容流式增量中缩进的围栏）
+    NSRegularExpression *fence = [NSRegularExpression regularExpressionWithPattern:@"^[\\t ]*```\\s*([A-Za-z0-9+-]*)\\s*$" options:0 error:nil];
     // 标题正则表达式
     NSRegularExpression *heading = [NSRegularExpression regularExpressionWithPattern:@"^(#{1,6})\\s+(.*)$" options:0 error:nil];
     

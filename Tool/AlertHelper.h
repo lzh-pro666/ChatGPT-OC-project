@@ -30,25 +30,23 @@ NS_ASSUME_NONNULL_BEGIN
            withSaveHandler:(void (^)(NSString *newKey))saveHandler;
 
 /**
- * @brief 显示一个通用的错误提示弹窗。
+ * @brief 显示一个通用的提示弹窗。
  * @param presenter 用于呈现弹窗的视图控制器。
- * @param message 错误消息内容。
- */
-+ (void)showErrorAlertOn:(UIViewController *)presenter withMessage:(NSString *)message;
-
-/**
- * @brief 显示一个通用的成功提示弹窗。
- * @param presenter 用于呈现弹窗的视图控制器。
- * @param message 成功消息内容。
- */
-+ (void)showSuccessAlertOn:(UIViewController *)presenter withMessage:(NSString *)message;
-
-/**
- * @brief 显示一个确认操作的弹窗 (例如重置、� 除等)。
- * @param presenter 用于呈现弹窗的视图控制器。
- * @param title 弹窗� �题。
+ * @param title 弹窗标题。
  * @param message 弹窗消息。
- * @param confirmTitle 确认按钮的� �题 (通常是 "重置", "� 除" 等)。
+ * @param buttonTitle 按钮标题。
+ */
++ (void)showAlertOn:(UIViewController *)presenter 
+          withTitle:(NSString *)title 
+            message:(NSString *)message 
+       buttonTitle:(NSString *)buttonTitle;
+
+/**
+ * @brief 显示一个确认操作的弹窗。
+ * @param presenter 用于呈现弹窗的视图控制器。
+ * @param title 弹窗标题。
+ * @param message 弹窗消息。
+ * @param confirmTitle 确认按钮的标题。
  * @param confirmationHandler 用户点击确认按钮后的回调。
  */
 + (void)showConfirmationAlertOn:(UIViewController *)presenter
@@ -58,14 +56,16 @@ NS_ASSUME_NONNULL_BEGIN
             confirmationHandler:(void (^)(void))confirmationHandler;
 
 /**
- * @brief 显示模型选择菜单 (ActionSheet)。
+ * @brief 显示操作菜单 (ActionSheet)。
  * @param presenter 用于呈现弹窗的视图控制器。
- * @param models 可供选择的模型名称列表。
- * @param selectionHandler 用户选择一个模型后的回调。
+ * @param title 弹窗标题。
+ * @param actions 操作按钮数组，每个元素包含标题和回调。
+ * @param cancelTitle 取消按钮标题。
  */
-+ (void)showModelSelectionMenuOn:(UIViewController *)presenter
-                      withModels:(NSArray<NSString *> *)models
-              selectionHandler:(void (^)(NSString *selectedModel))selectionHandler;
++ (void)showActionMenuOn:(UIViewController *)presenter
+                   title:(nullable NSString *)title
+                  actions:(NSArray<NSDictionary<NSString *, void (^)(void)> *> *)actions
+              cancelTitle:(NSString *)cancelTitle;
 
 /**
  * @brief 显示权限未开启的提示。

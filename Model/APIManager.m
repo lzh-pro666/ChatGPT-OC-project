@@ -56,13 +56,17 @@ static NSString * kAPIEndpoint = @"https://xiaoai.plus/v1/chat/completions";
         _taskAccumulatedData = [NSMutableDictionary dictionary];
         _taskBuffers = [NSMutableDictionary dictionary];
         _completedTaskIdentifiers = [NSMutableSet set];
-        _currentModelName = @"gpt-3.5-turbo"; // 默认使用 gpt-3.5-turbo 模型
+        _currentModelName = @"gpt-4o"; // 默认使用 gpt-4o 文本模型
     }
     return self;
 }
 
 - (void)setApiKey:(NSString *)apiKey {
     _apiKey = apiKey;
+}
+
+- (NSString *)currentApiKey {
+    return _apiKey;
 }
 
 #pragma mark - Intent Classification (生成/理解)
@@ -78,7 +82,8 @@ static NSString * kAPIEndpoint = @"https://xiaoai.plus/v1/chat/completions";
     NSString *clsPrompt = @"请你根据用户当前的聊天{用户输入的消息和聊天历史}，判断当前用户想要执行图片生成还是图片理解任务的百分比，根据百分比做最终回复，限制回复只能为\"生成\"或\"理解\"";
     [payload insertObject:@{ @"role": @"system", @"content": clsPrompt } atIndex:0];
 
-    NSDictionary *body = @{ @"model": (self.currentModelName ?: @"gpt-3.5-turbo"),
+    // 固定使用 gpt-4o 进行意图分类，避免受用户顶部文本模型影响
+    NSDictionary *body = @{ @"model": @"gpt-4o",
                             @"messages": payload,
                             @"temperature": @(MAX(0.0, MIN(2.0, temperature))) };
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:kAPIEndpoint]];
@@ -117,6 +122,9 @@ static NSString * kAPIEndpoint = @"https://xiaoai.plus/v1/chat/completions";
         if (completion) completion(nil, [NSError errorWithDomain:@"com.yourapp.api" code:401 userInfo:@{NSLocalizedDescriptionKey:@"API Key 未设置"}]);
         return;
     }
+    // 记录调用前的 API Key，避免调用方临时切换后未恢复导致后续401
+    NSString *prevKey = self.apiKey;
+
     // 新接口与格式
     NSString *genEndpoint = @"https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
     NSDictionary *messageContent = @{ @"role": @"user",
@@ -145,7 +153,11 @@ static NSString * kAPIEndpoint = @"https://xiaoai.plus/v1/chat/completions";
             NSString *code = obj[@"code"] ?: @"Unknown";
             NSString *msg = obj[@"message"] ?: @"Unknown error";
             NSError *apiErr = [NSError errorWithDomain:@"com.yourapp.api" code:422 userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"[%@] %@", code, msg]}];
-            dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion(nil, apiErr); });
+            dispatch_async(dispatch_get_main_queue(), ^{
+                // 恢复调用前的 API Key，防止后续文本请求401
+                self.apiKey = prevKey;
+                if (completion) completion(nil, apiErr);
+            });
             return;
         }
 
@@ -174,7 +186,11 @@ static NSString * kAPIEndpoint = @"https://xiaoai.plus/v1/chat/completions";
             dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion(nil, pe); });
             return;
         }
-        dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion([urls copy], nil); });
+        dispatch_async(dispatch_get_main_queue(), ^{
+            // 恢复调用前的 API Key，防止后续文本请求401
+            self.apiKey = prevKey;
+            if (completion) completion([urls copy], nil);
+        });
     }];
     [task resume];
 }
@@ -201,7 +217,7 @@ static NSString * kAPIEndpoint = @"https://xiaoai.plus/v1/chat/completions";
     
     // 准备请求体
     NSDictionary *requestBody = @{
-        @"model": self.currentModelName, // 使用当前设置的模型
+        @"model": self.currentModelName, // 使用当前设置的模型（文本：gpt-5；多模态：qvq-plus）
         @"messages": messages,
         @"stream": @YES
     };
@@ -326,7 +342,7 @@ static NSString * kAPIEndpoint = @"https://xiaoai.plus/v1/chat/completions";
     // 3. 准备请求体
     // 注意：多模态请求需要使用支持视觉功能的模型，如 "gpt-4-vision-preview"
     NSDictionary *requestBody = @{
-        @"model": self.currentModelName,
+        @"model": self.currentModelName, // 文本：gpt-5，多模态：qvq-plus
         @"messages": payloadMessages,
         @"stream": @YES
     };

@@ -9,6 +9,18 @@
 
 @implementation ThinkingNode
 
+// 基于字体与内边距动态计算单行气泡高度（与 RichMessage 单行视觉一致）
+static inline CGFloat ThinkingBubbleMinHeight(void) {
+    UIFont *font = [UIFont systemFontOfSize:17];
+    // 单行高度取字体行高，并向上取整以避免截断
+    CGFloat lineHeight = ceil(font.lineHeight);
+    // 与消息气泡一致的内边距（上下各 10）
+    CGFloat verticalPadding = 10.0 + 10.0;
+    // 预留微小冗余，避免不同渲染路径下的像素抖动
+    CGFloat epsilon = 2.0;
+    return lineHeight + verticalPadding + epsilon; // 约 44-48
+}
+
 - (instancetype)init {
     self = [super init];
     if (self) {
@@ -84,33 +96,49 @@
 // --- 核心修改：重写布局方法 ---
 - (ASLayoutSpec *)layoutSpecThatFits:(ASSizeRange)constrainedSize {
     
-    // 1. 创建一个水平布局来排列三个小圆点
+    // 1. 创建一个水平布局来排列三个小圆点，并居中对齐
     ASStackLayoutSpec *dotsLayout = [ASStackLayoutSpec horizontalStackLayoutSpec];
     dotsLayout.spacing = 8;
+    dotsLayout.justifyContent = ASStackLayoutJustifyContentCenter;
+    dotsLayout.alignItems = ASStackLayoutAlignItemsCenter;
     dotsLayout.children = self.dotNodes;
+
+    // 2. 使用居中布局确保三个点在可用空间内居中
+    ASCenterLayoutSpec *centerSpec = [ASCenterLayoutSpec centerLayoutSpecWithCenteringOptions:ASCenterLayoutSpecCenteringXY
+                                                                                sizingOptions:ASCenterLayoutSpecSizingOptionMinimumXY
+                                                                                        child:dotsLayout];
     
-    // 2. 将圆点布局包裹起来，给它增加内边距（padding）
-    // 这决定了圆点距离气泡边缘的距离，调整为与消息单元格一致
-    ASInsetLayoutSpec *bubbleContentLayout = [ASInsetLayoutSpec insetLayoutSpecWithInsets:UIEdgeInsetsMake(12, 16, 12, 16) child:dotsLayout];
+    // 3. 将内容包裹起来，使用与消息气泡一致的内边距（10,15,10,15）
+    ASInsetLayoutSpec *bubbleContentLayout = [ASInsetLayoutSpec insetLayoutSpecWithInsets:UIEdgeInsetsMake(10, 15, 10, 15) child:centerSpec];
+    // 使用动态计算的单行最小高度，匹配单行文本气泡视觉高度
+    bubbleContentLayout.style.minHeight = ASDimensionMake(ThinkingBubbleMinHeight());
     
-    // 3. 【关键】将内容（步骤2的结果）和气泡背景组合起来
+    // 4. 【关键】将内容（步骤3的结果）和气泡背景组合起来
     // ASBackgroundLayoutSpec 将 bubbleContentLayout 放在上层，将 bubbleNode 作为背景
     // 气泡的最终大小将由 bubbleContentLayout 的大小决定
     ASBackgroundLayoutSpec *bubbleLayout = [ASBackgroundLayoutSpec backgroundLayoutSpecWithChild:bubbleContentLayout background:self.bubbleNode];
+    // 限制最大宽度与消息一致（75%）以保持风格统一，同时下限高度统一
+    CGFloat minH = ThinkingBubbleMinHeight();
+    bubbleLayout.style.maxWidth = ASDimensionMake(constrainedSize.max.width * 0.75);
+    bubbleLayout.style.minHeight = ASDimensionMake(minH);
+    self.bubbleNode.style.minHeight = ASDimensionMake(minH);
 
-    // 4. 【关键】创建一个弹性的空白占位符
+    // 5. 【关键】创建一个弹性的空白占位符
     ASLayoutSpec *spacer = [[ASLayoutSpec alloc] init];
     spacer.style.flexGrow = 1.0; // 允许它占据所有剩余空间
 
-    // 5. 创建一个水平布局，用于安排整行（cell）的内容
+    // 6. 创建一个水平布局，用于安排整行（cell）的内容
     // 将气泡放在左边，空白占位符放在右边
     ASStackLayoutSpec *rowLayout = [ASStackLayoutSpec horizontalStackLayoutSpec];
     rowLayout.justifyContent = ASStackLayoutJustifyContentStart; // 整体内容靠左
     rowLayout.children = @[bubbleLayout, spacer];
     
-    // 6. 最后，给整行增加一些外边距，让它和别的消息之间有空隙
-    return [ASInsetLayoutSpec insetLayoutSpecWithInsets:UIEdgeInsetsMake(5, 12, 5, 12)
-                                                   child:rowLayout];
+    // 7. 最后，给整行增加一些外边距，让它和别的消息之间有空隙
+    ASInsetLayoutSpec *finalSpec = [ASInsetLayoutSpec insetLayoutSpecWithInsets:UIEdgeInsetsMake(5, 12, 5, 12)
+                                                                          child:rowLayout];
+    // 保障 cell 自身的最小高度，避免父布局裁剪
+    self.style.minHeight = ASDimensionMake(minH + 10.0); // 加上外边距的冗余
+    return finalSpec;
 }
 
 @end

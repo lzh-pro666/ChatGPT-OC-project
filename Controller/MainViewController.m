@@ -3,8 +3,9 @@
 #import "ChatDetailViewController.h"
 #import "ChatDetailViewControllerV2.h"
 #import "CoreDataManager.h"
+#import "ChatDetailMenuDelegate.h"
 
-@interface MainViewController () <ChatsViewControllerDelegate>
+@interface MainViewController () <ChatsViewControllerDelegate, ChatDetailMenuDelegate>
 
 @property (nonatomic, strong) UINavigationController *navigationController;
 @property (nonatomic, strong) ChatDetailViewController *chatDetailViewController;
@@ -19,8 +20,7 @@
 - (void)viewDidLoad {
     [super viewDidLoad];
     
-    // 初始化AB测试变量，默认使用已迁移到 SwiftUI 的原版本
-    // 可以通过修改这个值来切换版本：YES=V2版本(Texture)，NO=原版本(SwiftUI)
+    // 切换版本：YES=V2版本(Texture)，NO=原版本(SwiftUI)
     self.useV2Controller = YES;
     
     [self setupViews];
@@ -38,33 +38,14 @@
 - (void)setupViews {
     self.view.backgroundColor = [UIColor whiteColor];
     
-    // 根据AB测试变量创建对应版本的聊天详情视图控制器
-    if (self.useV2Controller) {
-        // 使用V2版本
-        self.chatDetailViewControllerV2 = [[ChatDetailViewControllerV2 alloc] init];
-        self.currentChatController = self.chatDetailViewControllerV2;
-        NSLog(@"[AB测试] 使用ChatDetailViewControllerV2");
-    } else {
-        // 使用原版本
-        self.chatDetailViewController = [[ChatDetailViewController alloc] init];
-        self.currentChatController = self.chatDetailViewController;
-        NSLog(@"[AB测试] 使用ChatDetailViewController");
-    }
-    
-    // 创建导航控制器，以当前聊天详情控制器为根视图
-    self.navigationController = [[UINavigationController alloc] initWithRootViewController:self.currentChatController];
-    
-    // 隐藏导航栏，因为聊天详情有自己的导航UI
-    self.navigationController.navigationBarHidden = YES;
-    
-    // 禁用导航控制器的交互式弹出手势，因为我们将自己管理滑动手势
-    self.navigationController.interactivePopGestureRecognizer.enabled = NO;
+    // 构建根导航栏
+    self.navigationController = [self buildRootNavigationWith:[self getOrCreateCurrentChatController]];
     
     // 创建聊天历史视图控制器
     self.chatsViewController = [[ChatsViewController alloc] init];
     self.chatsViewController.delegate = self;
     
-    // 添� 导航控制器作为子视图控制器
+    // 添加导航控制器作为子视图控制器
     [self addChildViewController:self.navigationController];
     [self.view addSubview:self.navigationController.view];
     [self.navigationController didMoveToParentViewController:self];
@@ -79,53 +60,15 @@
         [self.navigationController.view.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor]
     ]];
     
-    // 为ChatDetailViewController中的菜单按钮添� 动作
-    [self setupMenuButton];
-}
-
-- (void)setupMenuButton {
-    // 查找三横线菜单按钮并设置动作
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        UIButton *menuButton = [self findMenuButtonInChatDetailView];
-        if (menuButton) {
-            [menuButton removeTarget:nil action:NULL forControlEvents:UIControlEventTouchUpInside];
-            [menuButton addTarget:self action:@selector(showChatsList) forControlEvents:UIControlEventTouchUpInside];
-        }
-    });
-}
-
-- (UIButton *)findMenuButtonInChatDetailView {
-    // 递归查找菜单按钮，在当前使用的控制器中查找
-    return [self findButtonWithSystemImageName:@"line.horizontal.3" inView:self.currentChatController.view];
-}
-
-- (UIButton *)findButtonWithSystemImageName:(NSString *)imageName inView:(UIView *)view {
-    if ([view isKindOfClass:[UIButton class]]) {
-        UIButton *button = (UIButton *)view;
-        UIImage *image = [button imageForState:UIControlStateNormal];
-        
-        // 简单判断
-        if (image && button.imageView && 
-            [button.imageView.image.description containsString:imageName]) {
-            return button;
-        }
-    }
-    
-    for (UIView *subview in view.subviews) {
-        UIButton *foundButton = [self findButtonWithSystemImageName:imageName inView:subview];
-        if (foundButton) {
-            return foundButton;
-        }
-    }
-    
-    return nil;
+    // 绑定菜单点击回调
+    [self wireMenuDelegateIfPossible];
 }
 
 - (void)showChatsList {
-    // 修改为自定义�场，让ChatsViewController从左侧滑出
+    // 让ChatsViewController从左侧滑出
     self.chatsViewController.modalPresentationStyle = UIModalPresentationCustom;
     
-    // 添� 自定义动画
+    // 添加自定义动画
     CATransition *transition = [CATransition animation];
     transition.duration = 0.3;
     transition.type = kCATransitionPush;
@@ -155,19 +98,30 @@
         return;
     }
     
-    self.useV2Controller = useV2;
+    // 先记录切换前所使用的控制器版本，再读取对应的当前聊天
+    BOOL previousUseV2 = self.useV2Controller;
     
-    // 保存当前聊天数据
+    // 保存当前聊天数据（基于切换前的控制器）
     id currentChat = nil;
-    if (self.useV2Controller && self.chatDetailViewController) {
-        currentChat = self.chatDetailViewController.chat;
-    } else if (!self.useV2Controller && self.chatDetailViewControllerV2) {
+    if (previousUseV2 && self.chatDetailViewControllerV2) {
         currentChat = self.chatDetailViewControllerV2.chat;
+    } else if (!previousUseV2 && self.chatDetailViewController) {
+        currentChat = self.chatDetailViewController.chat;
     }
+    
+    // 更新为目标版本
+    self.useV2Controller = useV2;
     
     // 重新设置视图
     [self.navigationController.view removeFromSuperview];
     [self.navigationController removeFromParentViewController];
+    
+    // 销毁未使用的控制器，降低内存占用
+    if (useV2) {
+        self.chatDetailViewController = nil;
+    } else {
+        self.chatDetailViewControllerV2 = nil;
+    }
     
     [self setupViews];
     
@@ -177,6 +131,45 @@
     }
     
     NSLog(@"[AB测试] 已切换到%@版本", useV2 ? @"V2" : @"原");
+}
+
+#pragma mark - Helper (lazy creation & wiring)
+// 懒加载对应控制器
+- (UIViewController *)getOrCreateCurrentChatController {
+    if (self.useV2Controller) {
+        if (!self.chatDetailViewControllerV2) {
+            self.chatDetailViewControllerV2 = [[ChatDetailViewControllerV2 alloc] init];
+        }
+        self.chatDetailViewControllerV2.menuDelegate = (id)self;
+        self.currentChatController = self.chatDetailViewControllerV2;
+    } else {
+        if (!self.chatDetailViewController) {
+            self.chatDetailViewController = [[ChatDetailViewController alloc] init];
+        }
+        self.chatDetailViewController.menuDelegate = (id)self;
+        self.currentChatController = self.chatDetailViewController;
+    }
+    return self.currentChatController;
+}
+
+// 配置导航栏
+- (UINavigationController *)buildRootNavigationWith:(UIViewController *)root {
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:root];
+    nav.navigationBarHidden = YES;
+    nav.interactivePopGestureRecognizer.enabled = NO;
+    return nav;
+}
+
+- (void)wireMenuDelegateIfPossible {
+    if ([self.currentChatController respondsToSelector:@selector(setMenuDelegate:)]) {
+        [(id)self.currentChatController setMenuDelegate:(id)self];
+    }
+}
+
+#pragma mark - ChatDetailMenuDelegate
+
+- (void)chatDetailDidTapMenu {
+    [self showChatsList];
 }
 
 @end

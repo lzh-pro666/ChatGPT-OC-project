@@ -43,6 +43,8 @@
 @property (nonatomic, strong) CADisplayLink *displayLink; // 用于丝滑渐显的显示链接
 @property (nonatomic, assign) NSTimeInterval lastAnimationTime; // 上次动画时间
 @property (nonatomic, assign) NSInteger currentStreamingIndex; // 当前流式更新的节点索引
+// 新增：缓存尺寸属性
+@property (nonatomic, assign) CGSize cachedSize;
 @end
 
 @implementation RichMessageCellNode
@@ -128,8 +130,8 @@
     // 使用解析生成的内容节点进行布局
     UIColor *backgroundColor = self.isFromUser ? [UIColor systemBlueColor] : [UIColor systemGray5Color];
 
-    // 限制最大宽度为 85%
-    CGFloat maxWidth = constrainedSize.max.width * 0.85;
+    // 限制最大宽度为 75%
+    CGFloat maxWidth = constrainedSize.max.width * 0.75;
     self.contentNode.style.maxWidth = ASDimensionMake(maxWidth);
     
     // 为了避免末尾被裁剪，确保没有强制的 min/max height 限制
@@ -678,12 +680,17 @@
     static NSRegularExpression *boldRegex = nil;
     static NSRegularExpression *italicRegex = nil;
     static NSRegularExpression *codeRegex = nil;
+    static NSRegularExpression *urlRegex = nil;
+    static NSRegularExpression *emailRegex = nil;
     
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         boldRegex = [NSRegularExpression regularExpressionWithPattern:@"\\*\\*(.*?)\\*\\*" options:0 error:nil];
         italicRegex = [NSRegularExpression regularExpressionWithPattern:@"\\*(.*?)\\*" options:0 error:nil];
         codeRegex = [NSRegularExpression regularExpressionWithPattern:@"`(.*?)`" options:0 error:nil];
+        // 简单 URL / 邮箱 检测（容错，避免与 Markdown 语法冲突）
+        urlRegex = [NSRegularExpression regularExpressionWithPattern:@"https?://[A-Za-z0-9._~:/?#\\[\\]@!$&'()*+,;=%-]+" options:NSRegularExpressionCaseInsensitive error:nil];
+        emailRegex = [NSRegularExpression regularExpressionWithPattern:@"[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}" options:NSRegularExpressionCaseInsensitive error:nil];
     });
     
     // 应用粗体样式
@@ -704,6 +711,10 @@
     
     // 应用内联代码样式
     [self applyCodeStyleWithRegex:codeRegex toAttributedString:attributedString];
+
+    // 应用 URL 链接样式（点击行为依赖外部为 ASTextNode 设置 delegate，这里先提供可识别属性与样式）
+    [self applyURLStyleWithRegex:urlRegex toAttributedString:attributedString];
+    [self applyEmailStyleWithRegex:emailRegex toAttributedString:attributedString];
 }
 
 // 通用的样式应用方法
@@ -745,6 +756,49 @@
         } range:codeRange];
         
         [attributedString replaceCharactersInRange:[match rangeAtIndex:0] withString:[text substringWithRange:codeRange]];
+    }
+}
+
+// URL 样式应用方法
+- (void)applyURLStyleWithRegex:(NSRegularExpression *)regex 
+              toAttributedString:(NSMutableAttributedString *)attributedString {
+    NSString *text = attributedString.string;
+    NSArray<NSTextCheckingResult *> *matches = [regex matchesInString:text options:0 range:NSMakeRange(0, text.length)];
+    UIColor *linkColor = self.isFromUser ? [UIColor colorWithRed:215/255.0 green:235/255.0 blue:255/255.0 alpha:1.0] : [UIColor systemBlueColor];
+    for (NSInteger i = matches.count - 1; i >= 0; i--) {
+        NSTextCheckingResult *m = matches[i];
+        NSRange r = m.range;
+        NSString *urlStr = [text substringWithRange:r];
+        if (urlStr.length == 0) continue;
+        NSURL *url = [NSURL URLWithString:urlStr];
+        if (!url) continue;
+        [attributedString addAttributes:@{
+            NSLinkAttributeName: url,
+            NSForegroundColorAttributeName: linkColor,
+            NSUnderlineStyleAttributeName: @(NSUnderlineStyleSingle)
+        } range:r];
+    }
+}
+
+// 邮箱样式应用方法
+- (void)applyEmailStyleWithRegex:(NSRegularExpression *)regex 
+                 toAttributedString:(NSMutableAttributedString *)attributedString {
+    NSString *text = attributedString.string;
+    NSArray<NSTextCheckingResult *> *matches = [regex matchesInString:text options:0 range:NSMakeRange(0, text.length)];
+    UIColor *linkColor = self.isFromUser ? [UIColor colorWithRed:215/255.0 green:235/255.0 blue:255/255.0 alpha:1.0] : [UIColor systemBlueColor];
+    for (NSInteger i = matches.count - 1; i >= 0; i--) {
+        NSTextCheckingResult *m = matches[i];
+        NSRange r = m.range;
+        NSString *email = [text substringWithRange:r];
+        if (email.length == 0) continue;
+        NSString *mailto = [NSString stringWithFormat:@"mailto:%@", email];
+        NSURL *url = [NSURL URLWithString:mailto];
+        if (!url) continue;
+        [attributedString addAttributes:@{
+            NSLinkAttributeName: url,
+            NSForegroundColorAttributeName: linkColor,
+            NSUnderlineStyleAttributeName: @(NSUnderlineStyleSingle)
+        } range:r];
     }
 }
 
@@ -1192,10 +1246,11 @@
     
     [textNode.layer addAnimation:fadeAnimation forKey:[NSString stringWithFormat:@"fade_%ld", (long)index]];
     
-    // 立即设置最终状态，避免闪烁
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    // 立即设置最终状态，避免闪烁，并在动画完成后移除遮罩，防止裁剪尾部文本
+    CFTimeInterval totalDelay = (index * 0.08) + 0.35; // 动画开始延迟 + 动画时长冗余
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(totalDelay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         textNode.alpha = 1.0;
-        maskLayer.path = finalPath.CGPath;
+        textNode.layer.mask = nil; // 关键修复：移除遮罩，避免后续文本增长被裁剪
     });
 }
 
@@ -1238,6 +1293,8 @@
         node.alpha = 1.0;
         // 移除所有动画
         [node.layer removeAllAnimations];
+        // 同时移除可能残留的遮罩，确保完整显示
+        node.layer.mask = nil;
     }
     
     // 触发最终布局更新，确保富文本完全渲染
@@ -1258,6 +1315,8 @@
             node.alpha = 1.0;
             // 移除所有动画
             [node.layer removeAllAnimations];
+            // 同时移除可能残留的遮罩，确保完整显示
+            node.layer.mask = nil;
         }
         
         // 退出流式模式

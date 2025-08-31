@@ -69,6 +69,14 @@
     [message setValue:[NSDate date] forKey:@"date"];
     [message setValue:@(isFromUser) forKey:@"isFromUser"];
     [message setValue:chat forKey:@"chat"];
+    // 更新聊天会话的时间为最新一条消息的时间
+    @try {
+        if ([chat respondsToSelector:@selector(setValue:forKey:)]) {
+            [chat setValue:[NSDate date] forKey:@"date"];
+        }
+    } @catch (__unused NSException *e) {
+        // 忽略非标准模型的 KVC 异常
+    }
     [self saveContext];
     return message;
 }

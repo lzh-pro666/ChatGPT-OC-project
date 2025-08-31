@@ -5,93 +5,37 @@
 //  Created by AI Assistant
 //
 
+#import <Foundation/Foundation.h>
 #import <AsyncDisplayKit/AsyncDisplayKit.h>
-#import "ParserResult.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
 @interface RichMessageCellNode : ASCellNode
 
-// 【优化】1. 添加公共属性以存储缓存的尺寸
-// 这个尺寸将在首次布局后被计算和存储，与MessageCellNode保持一致
-@property (nonatomic, assign) CGSize cachedSize;
+// 设计化初始化：传入初始文本与气泡方向
+- (instancetype)initWithMessage:(NSString *)message isFromUser:(BOOL)isFromUser NS_DESIGNATED_INITIALIZER;
 
-/**
- * 初始化富文本消息节点
- * @param message 消息内容（支持 Markdown 格式）
- * @param isFromUser 是否来自用户
- */
-- (instancetype)initWithMessage:(NSString *)message isFromUser:(BOOL)isFromUser;
+// 禁用不支持的初始化方法
+- (instancetype)init NS_UNAVAILABLE;
+- (instancetype)new NS_UNAVAILABLE;
 
-/**
- * 更新消息文本（用于打字机效果）
- * @param newMessage 新的消息内容
- */
+// 附件（图片 / 远程 URL）
+- (void)setAttachments:(NSArray *)attachments;
+
+// 流式更新文本（增量）
 - (void)updateMessageText:(NSString *)newMessage;
 
-/**
- * 更新解析结果（用于优化解析）
- * @param results 解析结果数组
- */
-- (void)updateParsedResults:(NSArray<ParserResult *> *)results;
+// 流式更新文本（带结束态标记，结束态绕过行级截断）
+- (void)updateMessageText:(NSString *)newMessage isFinal:(BOOL)isFinal;
 
-/**
- * 获取当前消息内容
- * @return 当前消息文本
- */
-- (NSString *)currentMessage;
-
-/**
- * 测试代码块显示（用于调试）
- */
-- (void)testCodeBlockDisplay;
-
-/**
- * 手动设置测试解析结果（用于调试）
- */
-- (void)setTestParsedResults;
-
-/**
- * 简单测试代码块（最小化测试）
- */
-- (void)testSimpleCodeBlock;
-
-/**
- * 增量更新现有节点（不重新解析）
- */
-- (void)updateExistingNodesWithNewText:(NSString *)newText;
-
-/**
- * 获取或缓存文本高度
- */
-- (CGFloat)cachedHeightForText:(NSString *)text width:(CGFloat)width;
-
-/**
- * 清理高度缓存
- */
-- (void)clearHeightCache;
-
-/**
- * 流式更新完成时的处理
- */
+// 流式结束的收尾
 - (void)completeStreamingUpdate;
 
-/**
- * 检查富文本是否完全渲染
- */
-- (BOOL)isRichTextFullyRendered;
-
-/**
- * 流式模式下的快速文本更新（不重新解析Markdown）
- * @param newMessage 新的消息内容
- */
-- (void)updateTextContentDirectly:(NSString *)newMessage;
-
-/**
- * 为气泡追加缩略图附件（UIImage 或 本地文件/HTTP(S) URL），最多展示3个
- */
-- (void)setAttachments:(NSArray *)attachments;
+// 高度缓存辅助
+- (CGFloat)cachedHeightForText:(NSString *)text width:(CGFloat)width;
+- (void)clearHeightCache;
 
 @end
 
 NS_ASSUME_NONNULL_END
+

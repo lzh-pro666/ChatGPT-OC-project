@@ -39,7 +39,7 @@
             NSString *prefix = [currentKey substringToIndex:4];
             NSString *suffix = [currentKey substringFromIndex:currentKey.length - 4];
             textField.text = [NSString stringWithFormat:@"%@•••••%@", prefix, suffix];
-            textField.tag = 1; // � �记为已有 API Key，避免不修改也提示� �式错误
+            textField.tag = 1; // 标记为已有 API Key，避免不修改也提示格式错误
         }
     }];
 
@@ -48,30 +48,30 @@
         UITextField *textField = alert.textFields.firstObject;
         NSString *apiKey = textField.text;
 
-        // 如果是未修改过的已有Key的掩� �形式，则直接返回
+        // 如果是未修改过的已有Key的掩码形式，则直接返回
         if (textField.tag == 1 && ![apiKey hasPrefix:@"sk-"]) {
             return;
         }
 
-        // 简单� �式� �验
+        // 简单格式验证
         if (apiKey.length > 10 && [apiKey hasPrefix:@"sk-"]) {
             if (saveHandler) {
                 saveHandler(apiKey);
             }
         } else {
-            [self showErrorAlertOn:presenter withMessage:@"API Key � �式不正确，请输入有效的 API Key"];
+            [self showAlertOn:presenter withTitle:@"错误" message:@"API Key 格式不正确，请输入有效的 API Key" buttonTitle:@"确定"];
         }
     }]];
 
     [presenter presentViewController:alert animated:YES completion:nil];
 }
 
-+ (void)showErrorAlertOn:(UIViewController *)presenter withMessage:(NSString *)message {
-    [self showAlertOn:presenter withTitle:@"错误" message:message buttonTitle:@"确定"];
-}
-
-+ (void)showSuccessAlertOn:(UIViewController *)presenter withMessage:(NSString *)message {
-    [self showAlertOn:presenter withTitle:@"成功" message:message buttonTitle:@"确定"];
++ (void)showAlertOn:(UIViewController *)presenter withTitle:(NSString *)title message:(NSString *)message buttonTitle:(NSString *)buttonTitle {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
+                                                                     message:message
+                                                              preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:buttonTitle style:UIAlertActionStyleDefault handler:nil]];
+    [presenter presentViewController:alert animated:YES completion:nil];
 }
 
 + (void)showConfirmationAlertOn:(UIViewController *)presenter
@@ -93,30 +93,47 @@
     [presenter presentViewController:alert animated:YES completion:nil];
 }
 
-+ (void)showModelSelectionMenuOn:(UIViewController *)presenter
-                      withModels:(NSArray<NSString *> *)models
-              selectionHandler:(void (^)(NSString *selectedModel))selectionHandler {
-    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"选择模型"
-                                                                                message:nil
-                                                                         preferredStyle:UIAlertControllerStyleActionSheet];
++ (void)showActionMenuOn:(UIViewController *)presenter
+                   title:(nullable NSString *)title
+                  actions:(NSArray<NSDictionary<NSString *, void (^)(void)> *> *)actions
+              cancelTitle:(NSString *)cancelTitle {
+    UIAlertController *alertController = [UIAlertController alertControllerWithTitle:title
+                                                                              message:nil
+                                                                       preferredStyle:UIAlertControllerStyleActionSheet];
     
-    for (NSString *modelName in models) {
-        [alertController addAction:[UIAlertAction actionWithTitle:modelName style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-            if (selectionHandler) {
-                selectionHandler(action.title);
-            }
-        }]];
+    // 添加操作按钮
+    for (NSDictionary *actionDict in actions) {
+        NSString *actionTitle = actionDict.allKeys.firstObject;
+        void (^actionHandler)(void) = actionDict.allValues.firstObject;
+        
+        if (actionTitle && actionHandler) {
+            UIAlertAction *action = [UIAlertAction actionWithTitle:actionTitle 
+                                                             style:UIAlertActionStyleDefault 
+                                                           handler:^(UIAlertAction * _Nonnull action) {
+                actionHandler();
+            }];
+            [alertController addAction:action];
+        }
     }
 
-    [alertController addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    // 添加取消按钮
+    [alertController addAction:[UIAlertAction actionWithTitle:cancelTitle style:UIAlertActionStyleCancel handler:nil]];
+
+    // iPad 需要设置 popover 的锚点
+    UIPopoverPresentationController *popover = alertController.popoverPresentationController;
+    if (popover) {
+        popover.sourceView = presenter.view;
+        popover.sourceRect = presenter.view.bounds;
+        popover.permittedArrowDirections = UIPopoverArrowDirectionAny;
+    }
 
     [presenter presentViewController:alertController animated:YES completion:nil];
 }
 
 + (void)showPermissionAlertOn:(UIViewController *)presenter for:(NSString *)permissionName {
     NSString *appName = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleDisplayName"] ?: [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleName"];
-    NSString *title = [NSString stringWithFormat:@"“%@”权限未开启", permissionName];
-    NSString *message = [NSString stringWithFormat:@"请在iPhone的“设置 > %@”中允许访问%@。", appName, permissionName];
+    NSString *title = [NSString stringWithFormat:@"\"%@\"权限未开启", permissionName];
+    NSString *message = [NSString stringWithFormat:@"请在iPhone的\"设置 > %@\"中允许访问%@。", appName, permissionName];
     
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:message preferredStyle:UIAlertControllerStyleAlert];
     
@@ -125,18 +142,6 @@
         [[UIApplication sharedApplication] openURL:[NSURL URLWithString:UIApplicationOpenSettingsURLString] options:@{} completionHandler:nil];
     }]];
     
-    [presenter presentViewController:alert animated:YES completion:nil];
-}
-
-
-#pragma mark - Private Helper
-
-// 内部私有方法，用于简化成功和错误弹窗的创建
-+ (void)showAlertOn:(UIViewController *)presenter withTitle:(NSString *)title message:(NSString *)message buttonTitle:(NSString *)buttonTitle {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
-                                                                     message:message
-                                                              preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:buttonTitle style:UIAlertActionStyleDefault handler:nil]];
     [presenter presentViewController:alert animated:YES completion:nil];
 }
 

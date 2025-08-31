@@ -29,6 +29,8 @@ typedef void (^ImageGenerationBlock)(NSArray<NSURL *> * _Nullable imageURLs, NSE
 
 // 设置 API Key
 - (void)setApiKey:(NSString *)apiKey;
+// 获取当前 API Key（只读）
+- (NSString *)currentApiKey;
 
 // 用于取消任务
 - (void)cancelStreamingTask:(NSURLSessionDataTask *)task;

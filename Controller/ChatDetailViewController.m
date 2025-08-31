@@ -189,17 +189,20 @@ static const NSInteger kParserThresholdTextCount = 64;   // 解析阈值
     blurView.translatesAutoresizingMaskIntoConstraints = NO;
     [headerView addSubview:blurView];
     
-    // 菜单按钮 - 暂时保留但不设置动作
+    // 菜单按钮，统一回调到上层
     UIButton *menuButton = [UIButton buttonWithType:UIButtonTypeSystem];
     [menuButton setImage:[UIImage systemImageNamed:@"line.horizontal.3"] forState:UIControlStateNormal];
     menuButton.tintColor = [UIColor blackColor];
     menuButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [menuButton addTarget:self action:@selector(handleMenuTap) forControlEvents:UIControlEventTouchUpInside];
     [headerView addSubview:menuButton];
     
     // 标题按钮
     UIButton *titleButton = [UIButton buttonWithType:UIButtonTypeSystem];
     NSString *modelName = [[APIManager sharedManager] currentModelName];
-    [titleButton setTitle:modelName forState:UIControlStateNormal];
+    NSDictionary *displayMap = @{ @"gpt-5": @"GPT-5", @"gpt-4.1": @"GPT-4.1", @"gpt-4o": @"GPT-4o" };
+    NSString *displayTitle = displayMap[modelName] ?: modelName;
+    [titleButton setTitle:displayTitle forState:UIControlStateNormal];
     titleButton.titleLabel.font = [UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];
     titleButton.tintColor = UIColor.blackColor;
     [titleButton addTarget:self action:@selector(showModelSelectionMenu:) forControlEvents:UIControlEventTouchUpInside];
@@ -252,6 +255,12 @@ static const NSInteger kParserThresholdTextCount = 64;   // 解析阈值
         [separatorLine.bottomAnchor constraintEqualToAnchor:headerView.bottomAnchor],
         [separatorLine.heightAnchor constraintEqualToConstant:1]
     ]];
+}
+
+- (void)handleMenuTap {
+    if ([self.menuDelegate respondsToSelector:@selector(chatDetailDidTapMenu)]) {
+        [self.menuDelegate chatDetailDidTapMenu];
+    }
 }
 
 - (void)setupInputArea {
@@ -923,7 +932,7 @@ static const NSInteger kParserThresholdTextCount = 64;   // 解析阈值
         [[APIManager sharedManager] setApiKey:newKey];
         
         // 显示成功提示
-        [AlertHelper showSuccessAlertOn:self withMessage:@"API Key 已保存"];
+        [AlertHelper showAlertOn:self withTitle:@"成功" message:@"API Key 已保存" buttonTitle:@"确定"];
     }];
 }
 
@@ -947,7 +956,7 @@ static const NSInteger kParserThresholdTextCount = 64;   // 解析阈值
         [[APIManager sharedManager] setApiKey:@""];
         
         // 显示成功提示
-        [AlertHelper showSuccessAlertOn:self withMessage:@"API Key 已重置，请设置新的 API Key"];
+        [AlertHelper showAlertOn:self withTitle:@"成功" message:@"API Key 已重置，请设置新的 API Key" buttonTitle:@"确定"];
         
         // 提示用户设置新的API Key
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -956,21 +965,27 @@ static const NSInteger kParserThresholdTextCount = 64;   // 解析阈值
     }];
 }
 
-- (void)showModelSelectionMenu:(UIButton *)sender {
-    NSArray *models = @[@"gpt-3.5-turbo", @"gpt-4o"]; // 模型列表可以从配置或APIManager获取
-    [AlertHelper showModelSelectionMenuOn:self withModels:models selectionHandler:^(NSString *selectedModel) {
-        [self updateModelSelection:selectedModel button:sender];
-    }];
+-(void)showModelSelectionMenu:(UIButton *)sender {
+    NSArray *models = @[@"gpt-4o", @"gpt-5", @"gpt-4.1"]; // 支持的模型（默认 gpt-4o）
+    
+    // 构建操作数组
+    NSMutableArray *actions = [NSMutableArray array];
+    for (NSString *model in models) {
+        [actions addObject:@{
+            model: ^{
+                [self updateModelSelection:model button:sender];
+            }
+        }];
+    }
+    
+    [AlertHelper showActionMenuOn:self title:@"选择模型" actions:actions cancelTitle:@"取消"];
 }
 
-- (void)updateModelSelection:(NSString *)modelName button:(UIButton *)button {
-    // 更新APIManager中的模型名称
+-(void)updateModelSelection:(NSString *)modelName button:(UIButton *)button {
     [APIManager sharedManager].currentModelName = modelName;
-    
-    // 更新按钮标题
-    [button setTitle:modelName forState:UIControlStateNormal];
-    
-    // 保存选择到UserDefaults
+    NSDictionary *displayMap = @{ @"gpt-4o": @"GPT-4o", @"gpt-5": @"GPT-5", @"gpt-4.1": @"GPT-4.1" };
+    NSString *displayTitle = displayMap[modelName] ?: modelName;
+    [button setTitle:displayTitle forState:UIControlStateNormal];
     [[NSUserDefaults standardUserDefaults] setObject:modelName forKey:@"SelectedModelName"];
     [[NSUserDefaults standardUserDefaults] synchronize];
 }

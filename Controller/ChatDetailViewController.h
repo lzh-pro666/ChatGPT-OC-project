@@ -2,6 +2,7 @@
 // #import <AsyncDisplayKit/AsyncDisplayKit.h>
 #import <PhotosUI/PhotosUI.h>
 #import <MobileCoreServices/MobileCoreServices.h>
+#import "ChatDetailMenuDelegate.h"
 #import "CustomMenuView.h"
 #import "AlertHelper.h"
 #import "MediaPickerManager.h"
@@ -15,6 +16,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, strong) id chat;
 @property (nonatomic, strong) UILabel *placeholderLabel;
 @property (nonatomic, strong) NSLayoutConstraint *inputTextViewHeightConstraint;
+@property (nonatomic, weak) id<ChatDetailMenuDelegate> menuDelegate;
 
 @end
 
