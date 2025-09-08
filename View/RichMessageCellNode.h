@@ -28,6 +28,12 @@ NS_ASSUME_NONNULL_BEGIN
 // 流式更新文本（带结束态标记，结束态绕过行级截断）
 - (void)updateMessageText:(NSString *)newMessage isFinal:(BOOL)isFinal;
 
+// 新增：按语义块增量追加，避免重复解析已渲染内容
+- (void)appendSemanticBlocks:(NSArray<NSString *> *)blocks isFinal:(BOOL)isFinal;
+
+// 新增：配置每一行渲染的时间间隔（秒）
+- (void)setLineRenderInterval:(NSTimeInterval)lineRenderInterval;
+
 // 流式结束的收尾
 - (void)completeStreamingUpdate;
 

@@ -138,14 +138,6 @@ static const BOOL kUseRichMessageCell = YES;
     _tableNode.view.delaysContentTouches = NO;
     _tableNode.view.canCancelContentTouches = YES;
     _tableNode.view.panGestureRecognizer.cancelsTouchesInView = NO;
-    
-    // 提高手势响应优先级
-    if (@available(iOS 13.4, *)) {
-        _tableNode.view.panGestureRecognizer.allowedScrollTypesMask = UIScrollTypeMaskAll;
-    }
-    // 设置手势优先级，确保用户滑动优先响应
-    _tableNode.view.panGestureRecognizer.minimumNumberOfTouches = 1;
-    _tableNode.view.panGestureRecognizer.maximumNumberOfTouches = 1;
     // _tableNode.view.panGestureRecognizer.delegate = self; // 禁止：系统要求其 delegate 必须为 scrollView 本身
     
     [self.view addSubnode:_tableNode];
@@ -690,7 +682,7 @@ static const BOOL kUseRichMessageCell = YES;
             RichMessageCellNode *rich = [[RichMessageCellNode alloc] initWithMessage:message isFromUser:isFromUser];
             // 设置默认的逐行渲染间隔（可按需调整）
             if ([rich respondsToSelector:@selector(setLineRenderInterval:)]) {
-                [rich setLineRenderInterval:0.15]; // 150ms/行，延缓渲染速度
+                [rich setLineRenderInterval:0.08]; // 80ms/行
             }
             if (attachments.count > 0 && [rich respondsToSelector:@selector(setAttachments:)]) {
                 [rich setAttachments:attachments];

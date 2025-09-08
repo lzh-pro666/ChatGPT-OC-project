@@ -105,7 +105,7 @@
         [self parseMessage:message];
         
         // 新增：逐行渲染默认间隔与计数
-        _lineRenderInterval = 0.15; // 默认 150ms/行，与控制器保持一致
+        _lineRenderInterval = 0.1; // 默认 100ms/行
         _processedBlockCounter = 0;
         _currentBlockIndex = 0;
         _currentBlockTotalLines = 0;
