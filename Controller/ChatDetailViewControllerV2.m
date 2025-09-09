@@ -386,16 +386,20 @@ static const BOOL kUseRichMessageCell = YES;
     self.thumbnailsStackView.clipsToBounds = NO;
     [self.inputBackgroundView addSubview:self.thumbnailsStackView];
     
-    // 文本输入框 - 优化约束稳定性
+    // 文本输入框 - 统一样式和约束
     self.inputTextView = [[UITextView alloc] init];
-    self.inputTextView.font = [UIFont systemFontOfSize:18];
+    // 统一字体大小：16pt，与系统消息气泡保持一致
+    self.inputTextView.font = [UIFont systemFontOfSize:16];
     self.inputTextView.delegate = self;
-    // 关键修复：启用滚动，支持超过4行后的滑动预览
+    // 启用滚动，支持超过4行后的滑动预览
     self.inputTextView.scrollEnabled = YES;
     self.inputTextView.backgroundColor = [UIColor clearColor];
-    self.inputTextView.textContainerInset = UIEdgeInsetsMake(8, 8, 8, 8);
+    // 统一内边距：上下12pt，左右16pt，确保与按钮对齐
+    self.inputTextView.textContainerInset = UIEdgeInsetsMake(12, 16, 12, 16);
+    // 统一输入字体，防止 attributed typing 导致行高/高度抖动
+    self.inputTextView.typingAttributes = @{ NSFontAttributeName: self.inputTextView.font };
     self.inputTextView.translatesAutoresizingMaskIntoConstraints = NO;
-    // 关闭预测与拼写候选，避免系统候选“计算”与控制台噪声
+    // 关闭预测与拼写候选，避免系统候选"计算"与控制台噪声
     self.inputTextView.autocorrectionType = UITextAutocorrectionTypeNo;
     self.inputTextView.spellCheckingType = UITextSpellCheckingTypeNo;
     if (@available(iOS 11.0, *)) {
@@ -406,13 +410,16 @@ static const BOOL kUseRichMessageCell = YES;
     self.inputTextView.autocapitalizationType = UITextAutocapitalizationTypeNone;
     self.inputTextView.inputAssistantItem.leadingBarButtonGroups = @[];
     self.inputTextView.inputAssistantItem.trailingBarButtonGroups = @[];
+    // 设置最小和最大高度，确保单行时不会扩展
+    self.inputTextView.textContainer.lineFragmentPadding = 0;
+    self.inputTextView.textContainer.maximumNumberOfLines = 0;
     [self.inputBackgroundView addSubview:self.inputTextView];
     
-    // 占位标签
+    // 占位标签 - 统一字体和样式
     self.placeholderLabel = [[UILabel alloc] init];
-    self.placeholderLabel.text = @"  给ChatGPT发送信息";
-    self.placeholderLabel.textColor = [UIColor lightGrayColor];
-    self.placeholderLabel.font = [UIFont systemFontOfSize:18];
+    self.placeholderLabel.text = @"    给ChatGPT发送信息";
+    self.placeholderLabel.textColor = [UIColor colorWithRed:0.6 green:0.6 blue:0.6 alpha:1.0]; // 更柔和的灰色
+    self.placeholderLabel.font = [UIFont systemFontOfSize:16]; // 与输入框字体保持一致
     self.placeholderLabel.translatesAutoresizingMaskIntoConstraints = NO;
     
     // 工具栏
@@ -443,8 +450,11 @@ static const BOOL kUseRichMessageCell = YES;
     [toolbarView addSubview:self.sendButton];
     
     // 3. 激活所有约束
-    // 将高度约束保存为属性，以便后续动态修改
-    self.inputTextViewHeightConstraint = [self.inputTextView.heightAnchor constraintEqualToConstant:36]; // 初始高度
+    // 计算单行精确高度，确保初始状态稳定
+    CGFloat lineHeight = 16.0; // 16pt字体对应的行高
+    UIEdgeInsets textInsets = self.inputTextView.textContainerInset;
+    CGFloat singleLineHeight = lineHeight + textInsets.top + textInsets.bottom;
+    self.inputTextViewHeightConstraint = [self.inputTextView.heightAnchor constraintEqualToConstant:singleLineHeight];
     
     // 让容器的底部对齐到屏幕的真正底部，而不是安全区
     self.inputContainerBottomConstraint = [self.inputContainerView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor];
@@ -496,8 +506,8 @@ static const BOOL kUseRichMessageCell = YES;
         
         [self.inputTextView.trailingAnchor constraintEqualToAnchor:toolbarView.leadingAnchor],
         
-        // 占位标签 (placeholderLabel)
-        [self.placeholderLabel.leadingAnchor constraintEqualToAnchor:self.inputTextView.leadingAnchor constant:5],
+        // 占位标签 (placeholderLabel) - 精确对齐
+        [self.placeholderLabel.leadingAnchor constraintEqualToAnchor:self.inputTextView.leadingAnchor constant:0],
         [self.placeholderLabel.centerYAnchor constraintEqualToAnchor:self.inputTextView.centerYAnchor]
     ]];
 }
@@ -988,16 +998,25 @@ static const BOOL kUseRichMessageCell = YES;
     // 更新发送按钮状态
     [self updateSendButtonState];
     
-    // 关键修复：动态调整输入框高度，使用行高和内容高度估算，避免频繁测量
+    // 关键修复：防止第一行输入时高度扩展，确保单行时保持固定高度
     NSInteger lineCount = [self calculateLineCountForTextView:textView];
     
-    CGFloat lineHeight = (textView.font ? textView.font.lineHeight : 18.0);
+    // 使用精确的行高计算，确保与初始设置一致
+    CGFloat lineHeight = 16.0; // 与字体大小保持一致
     UIEdgeInsets insets = textView.textContainerInset;
+    CGFloat singleLineHeight = lineHeight + insets.top + insets.bottom;
     
-    if (lineCount <= 4) {
-        CGFloat targetLines = MAX(lineCount, (textView.text.length > 0 ? 1 : 0));
-        CGFloat newHeight = ceil(lineHeight * targetLines) + insets.top + insets.bottom;
-        newHeight = MIN(MAX(newHeight, 36), 120);
+    if (lineCount <= 1) {
+        // 单行或空行：保持固定高度，不扩展
+        if (self.inputTextViewHeightConstraint.constant != singleLineHeight) {
+            self.inputTextViewHeightConstraint.constant = singleLineHeight;
+            [self.view layoutIfNeeded];
+        }
+    } else if (lineCount <= 4) {
+        // 2-4行：动态调整高度
+        CGFloat newHeight = ceil(lineHeight * lineCount) + insets.top + insets.bottom;
+        // 确保最小高度为单行高度，最大高度为4行高度
+        newHeight = MAX(singleLineHeight, MIN(newHeight, lineHeight * 4 + insets.top + insets.bottom));
         
         if (self.inputTextViewHeightConstraint.constant != newHeight) {
             self.inputTextViewHeightConstraint.constant = newHeight;
@@ -1005,9 +1024,10 @@ static const BOOL kUseRichMessageCell = YES;
             [self scrollToBottom]; // 确保滚动到底部
         }
     } else {
-        // 超过4行：固定高度为120px，启用滚动
-        if (self.inputTextViewHeightConstraint.constant != 120) {
-            self.inputTextViewHeightConstraint.constant = 120;
+        // 超过4行：固定高度为4行高度，启用滚动
+        CGFloat maxHeight = lineHeight * 4 + insets.top + insets.bottom;
+        if (self.inputTextViewHeightConstraint.constant != maxHeight) {
+            self.inputTextViewHeightConstraint.constant = maxHeight;
             [self.view layoutIfNeeded];
         }
         
@@ -1036,29 +1056,60 @@ static const BOOL kUseRichMessageCell = YES;
     self.sendButton.alpha = hasContent ? 1.0 : 0.5;
 }
 
-// 新增：计算文本视图的行数
+// 新增：计算文本视图的行数 - 优化版本
 - (NSInteger)calculateLineCountForTextView:(UITextView *)textView {
     if (!textView) { return 0; }
     if (!textView.text || textView.text.length == 0) {
         return 0;
     }
     
-    CGFloat lineHeight = textView.font ? textView.font.lineHeight : 18.0;
-    if (lineHeight <= 0) { lineHeight = 18.0; }
-    
+    // 使用固定的行高，与字体大小保持一致
+    CGFloat lineHeight = 16.0; // 与字体大小保持一致
     UIEdgeInsets insets = textView.textContainerInset;
-    CGFloat contentHeight = textView.contentSize.height - insets.top - insets.bottom;
     
-    if (contentHeight <= 0) {
-        CGFloat availableWidth = MAX(textView.bounds.size.width - insets.left - insets.right, 1.0);
-        CGFloat approxCharWidth = MAX((textView.font ? textView.font.pointSize * 0.6 : 10.0), 5.0);
-        CGFloat approxCharsPerLine = MAX(floor(availableWidth / approxCharWidth), 1.0);
-        NSInteger approxLines = MAX(1, (NSInteger)ceil((double)textView.text.length / (double)approxCharsPerLine));
-        return approxLines;
+    // 计算可用宽度
+    CGFloat availableWidth = MAX(textView.bounds.size.width - insets.left - insets.right, 1.0);
+    if (availableWidth <= 0) {
+        availableWidth = MAX(textView.frame.size.width - insets.left - insets.right, 1.0);
     }
     
-    NSInteger lines = (NSInteger)ceil(MAX(contentHeight, lineHeight) / lineHeight);
-    return lines;
+    // 使用文本容器进行精确计算
+    NSTextContainer *textContainer = textView.textContainer;
+    NSLayoutManager *layoutManager = textView.layoutManager;
+    NSTextStorage *textStorage = textView.textStorage;
+    
+    if (textContainer && layoutManager && textStorage) {
+        // 设置文本容器的宽度
+        textContainer.size = CGSizeMake(availableWidth, CGFLOAT_MAX);
+        textContainer.lineFragmentPadding = 0;
+        
+        // 计算实际的行数
+        NSRange glyphRange = [layoutManager glyphRangeForTextContainer:textContainer];
+        if (glyphRange.length > 0) {
+            NSInteger lineCount = 0;
+            NSRange lineRange;
+            for (NSInteger glyphIndex = glyphRange.location; glyphIndex < NSMaxRange(glyphRange); glyphIndex = NSMaxRange(lineRange)) {
+                CGRect lineRect = [layoutManager lineFragmentUsedRectForGlyphAtIndex:glyphIndex effectiveRange:&lineRange];
+                if (lineRect.size.height > 0) {
+                    lineCount++;
+                }
+            }
+            return MAX(1, lineCount);
+        }
+    }
+    
+    // 备用方案：基于内容高度计算
+    CGFloat contentHeight = textView.contentSize.height - insets.top - insets.bottom;
+    if (contentHeight > 0) {
+        NSInteger lines = (NSInteger)ceil(MAX(contentHeight, lineHeight) / lineHeight);
+        return MAX(1, lines);
+    }
+    
+    // 最终备用方案：基于字符数估算
+    CGFloat approxCharWidth = lineHeight * 0.6; // 字符宽度约为字体大小的0.6倍
+    CGFloat approxCharsPerLine = MAX(floor(availableWidth / approxCharWidth), 1.0);
+    NSInteger approxLines = MAX(1, (NSInteger)ceil((double)textView.text.length / (double)approxCharsPerLine));
+    return approxLines;
 }
 
 - (BOOL)textView:(UITextView *)textView shouldChangeTextInRange:(NSRange)range replacementText:(NSString *)text {
@@ -1464,9 +1515,7 @@ NSString *accumulated = [strongSelf.semanticRenderedBuffer copy];
                 attachments:(NSArray *)attachments
                 isFromUser:(BOOL)isFromUser
                 completion:(nullable void (^)(void))completion {
-    NSInteger currentCount = self.messages.count;
-    
-    // 构建消息内容，包含附件信息
+    // 1) 构建消息内容（包含附件描述）
     NSString *messageContent = text;
     if (attachments.count > 0) {
         NSMutableString *contentWithAttachments = [NSMutableString stringWithString:text ?: @""];
@@ -1474,11 +1523,9 @@ NSString *accumulated = [strongSelf.semanticRenderedBuffer copy];
             [contentWithAttachments appendString:@"\n\n"];
         }
         [contentWithAttachments appendString:@"[附件："];
-        
         for (NSInteger i = 0; i < attachments.count; i++) {
             id attachment = attachments[i];
             if (i > 0) [contentWithAttachments appendString:@", "];
-            
             if ([attachment isKindOfClass:[UIImage class]]) {
                 [contentWithAttachments appendString:@"图片"];
             } else if ([attachment isKindOfClass:[NSURL class]]) {
@@ -1491,33 +1538,31 @@ NSString *accumulated = [strongSelf.semanticRenderedBuffer copy];
             }
         }
         [contentWithAttachments appendString:@"]"];
-        
         messageContent = [contentWithAttachments copy];
     }
-    
+
+    // 2) 直接在数据源数组尾部追加（避免 reloadData）
     [[CoreDataManager sharedManager] addMessageToChat:self.chat content:messageContent isFromUser:isFromUser];
-    [self fetchMessages];
-    
-    if (self.messages.count > currentCount) {
-        NSIndexPath *newIndexPath = [NSIndexPath indexPathForRow:self.messages.count - 1 inSection:0];
-        
-        // 关键优化：使用无动画插入，避免画面闪烁和气泡跳动
-        [UIView performWithoutAnimation:^{
-            [self.tableNode performBatchUpdates:^{
-                [self.tableNode insertRowsAtIndexPaths:@[newIndexPath] withRowAnimation:UITableViewRowAnimationNone];
-            } completion:^(BOOL finished) {
-                // 在动画完成后滚动到底部并执行回调
-                if (finished) {
-                    // 关键修复：确保滚动到新添加的用户消息
-                    [self.tableNode scrollToRowAtIndexPath:newIndexPath atScrollPosition:UITableViewScrollPositionBottom animated:NO];
-                    
-                    if (completion) {
-                        completion();
-                    }
-                }
-            }];
-        }];
+    NSManagedObject *last = [[[CoreDataManager sharedManager] fetchMessagesForChat:self.chat] lastObject];
+    if (!self.messages) { self.messages = [NSMutableArray array]; }
+    if (![self.messages isKindOfClass:[NSMutableArray class]]) {
+        self.messages = [[self.messages mutableCopy] ?: [NSMutableArray array] mutableCopy];
     }
+    if (last) { [(NSMutableArray *)self.messages addObject:last]; }
+    NSIndexPath *newIndexPath = [NSIndexPath indexPathForRow:self.messages.count - 1 inSection:0];
+
+    // 3) 仅插入最后一行，禁止整表刷新；使用无动画，避免闪烁/抖动
+    [UIView performWithoutAnimation:^{
+        [self.tableNode performBatchUpdates:^{
+            [self.tableNode insertRowsAtIndexPaths:@[newIndexPath] withRowAnimation:UITableViewRowAnimationNone];
+        } completion:^(BOOL finished) {
+            if (finished) {
+                // 4) 强制贴底（无动画），确保新消息出现在底部
+                [self.tableNode scrollToRowAtIndexPath:newIndexPath atScrollPosition:UITableViewScrollPositionBottom animated:NO];
+                if (completion) { completion(); }
+            }
+        }];
+    }];
 }
 
 // 辅助方法，用于构建消息历史
@@ -2105,4 +2150,5 @@ NSString *accumulated = [strongSelf.semanticRenderedBuffer copy];
 }
 
 @end
+
 

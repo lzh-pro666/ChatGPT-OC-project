@@ -21,6 +21,11 @@
 @property (nonatomic, strong) ASButtonNode *duplicateButton;
 @property (nonatomic, strong) ASTextNode *codeNode;
 @property (nonatomic, strong) ASScrollNode *scrollNode; // 新增：横向滚动容器
+// 更新合并与增量应用
+@property (nonatomic, assign) BOOL pendingTextApplyScheduled;
+@property (nonatomic, strong) NSAttributedString *pendingAttr;   // 待应用文本
+@property (nonatomic, assign) BOOL pendingIsAppend;               // 是否为仅追加
+@property (nonatomic, strong) NSMutableAttributedString *appliedAttr; // 已应用缓存
 @end
 
 @implementation AICodeBlockNode
@@ -78,6 +83,7 @@
         _codeNode.truncationMode = NSLineBreakByClipping; // 不换行，超过宽度时裁剪
         _codeNode.style.flexGrow = 0;
         _codeNode.style.flexShrink = 0;
+        _codeNode.layerBacked = YES; // 降低 UIView 创建
         
         // 应用语法高亮并强制段落样式为不换行
         NSAttributedString *highlightedCode = [_highlighter highlightCode:_code language:_language fontSize:14];
@@ -96,6 +102,10 @@
         ps.lineSpacing = 2;
         [mutable addAttribute:NSParagraphStyleAttributeName value:ps range:NSMakeRange(0, mutable.length)];
         _codeNode.attributedText = [mutable copy];
+        self.appliedAttr = [mutable mutableCopy];
+        self.pendingTextApplyScheduled = NO;
+        self.pendingAttr = nil;
+        self.pendingIsAppend = NO;
         
         // 依据最长行设置内容宽度，启用横向滚动
         [self updateCodeContentWidth];
@@ -122,43 +132,110 @@
     return self;
 }
 
-// 新增：增量更新代码文本
+// 新增：增量更新代码文本（追加优先）
 - (void)updateCodeText:(NSString *)code {
     if (!code) { code = @""; }
     if ([_code isEqualToString:code]) { return; }
+    BOOL isAppend = (_code.length > 0 && code.length > _code.length && [code hasPrefix:_code]);
+    NSString *suffix = @"";
+    if (isAppend) { suffix = [code substringFromIndex:_code.length]; }
     _code = [code copy];
-    
-    // 重新高亮（可放到后台线程，但 ASTextNode 赋值需在主线程）
+
     __weak typeof(self) weakSelf = self;
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         __strong typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf) return;
-        NSAttributedString *highlighted = [strongSelf.highlighter highlightCode:strongSelf->_code language:strongSelf->_language fontSize:14];
-        NSMutableAttributedString *mutable = nil;
-        if (highlighted && highlighted.length > 0) {
-            mutable = [[NSMutableAttributedString alloc] initWithAttributedString:highlighted];
+        if (isAppend && suffix.length > 0 && strongSelf.appliedAttr.length > 0) {
+            // 只高亮追加部分
+            NSAttributedString *highlightedSuffix = [strongSelf.highlighter highlightCode:suffix language:strongSelf->_language fontSize:14];
+            NSMutableAttributedString *mutable = nil;
+            if (highlightedSuffix && highlightedSuffix.length > 0) {
+                mutable = [[NSMutableAttributedString alloc] initWithAttributedString:highlightedSuffix];
+            } else {
+                mutable = [[NSMutableAttributedString alloc] initWithString:suffix attributes:@{
+                    NSFontAttributeName: [UIFont monospacedSystemFontOfSize:14 weight:UIFontWeightRegular],
+                    NSForegroundColorAttributeName: strongSelf.highlighter.theme.text
+                }];
+            }
+            NSMutableParagraphStyle *ps = [[NSMutableParagraphStyle alloc] init];
+            ps.lineBreakMode = NSLineBreakByClipping;
+            ps.lineSpacing = 2;
+            [mutable addAttribute:NSParagraphStyleAttributeName value:ps range:NSMakeRange(0, mutable.length)];
+            strongSelf.pendingAttr = [mutable copy];
+            strongSelf.pendingIsAppend = YES;
         } else {
-            NSString *raw = strongSelf->_code ?: @"";
-            mutable = [[NSMutableAttributedString alloc] initWithString:raw attributes:@{
-                NSFontAttributeName: [UIFont monospacedSystemFontOfSize:14 weight:UIFontWeightRegular],
-                NSForegroundColorAttributeName: strongSelf.highlighter.theme.text
-            }];
+            // 全量重建
+            NSAttributedString *highlighted = [strongSelf.highlighter highlightCode:strongSelf->_code language:strongSelf->_language fontSize:14];
+            NSMutableAttributedString *mutable = nil;
+            if (highlighted && highlighted.length > 0) {
+                mutable = [[NSMutableAttributedString alloc] initWithAttributedString:highlighted];
+            } else {
+                NSString *raw = strongSelf->_code ?: @"";
+                mutable = [[NSMutableAttributedString alloc] initWithString:raw attributes:@{
+                    NSFontAttributeName: [UIFont monospacedSystemFontOfSize:14 weight:UIFontWeightRegular],
+                    NSForegroundColorAttributeName: strongSelf.highlighter.theme.text
+                }];
+            }
+            NSMutableParagraphStyle *ps = [[NSMutableParagraphStyle alloc] init];
+            ps.lineBreakMode = NSLineBreakByClipping;
+            ps.lineSpacing = 2;
+            [mutable addAttribute:NSParagraphStyleAttributeName value:ps range:NSMakeRange(0, mutable.length)];
+            strongSelf.pendingAttr = [mutable copy];
+            strongSelf.pendingIsAppend = NO;
         }
+        [strongSelf coalescedApplyPendingText];
+    });
+}
+
+// 合并应用待更新文本（节流到主线程下一帧）
+- (void)coalescedApplyPendingText {
+    if (self.pendingTextApplyScheduled) { return; }
+    self.pendingTextApplyScheduled = YES;
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.016 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) { return; }
+        strongSelf.pendingTextApplyScheduled = NO;
+        if (!strongSelf.pendingAttr) { return; }
+        if (strongSelf.pendingIsAppend && strongSelf.appliedAttr.length > 0) {
+            [strongSelf.appliedAttr appendAttributedString:strongSelf.pendingAttr];
+            strongSelf.codeNode.attributedText = [strongSelf.appliedAttr copy];
+        } else {
+            strongSelf.appliedAttr = [strongSelf.pendingAttr mutableCopy];
+            strongSelf.codeNode.attributedText = strongSelf.pendingAttr;
+        }
+        strongSelf.pendingAttr = nil;
+        strongSelf.pendingIsAppend = NO;
+        strongSelf->_hasCachedMaxLineWidth = NO;
+        strongSelf->_hasCachedHeight = NO;
+        [strongSelf updateCodeContentWidthAsync];
+        [strongSelf setNeedsLayout];
+    });
+}
+
+// 在流式渲染完成后执行一次性高亮，减少流中主线程压力
+- (void)finalizeHighlighting {
+    NSString *codeSnapshot = [self.code copy] ?: @"";
+    NSString *langSnapshot = [self.language copy] ?: @"plaintext";
+    if (codeSnapshot.length == 0) { return; }
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) { return; }
+        NSAttributedString *highlighted = [strongSelf.highlighter highlightCode:codeSnapshot language:langSnapshot fontSize:14];
+        if (!highlighted) { return; }
+        NSMutableAttributedString *mutable = [[NSMutableAttributedString alloc] initWithAttributedString:highlighted];
         NSMutableParagraphStyle *ps = [[NSMutableParagraphStyle alloc] init];
-        ps.lineBreakMode = NSLineBreakByClipping; // 禁止自动换行
+        ps.lineBreakMode = NSLineBreakByClipping;
         ps.lineSpacing = 2;
         [mutable addAttribute:NSParagraphStyleAttributeName value:ps range:NSMakeRange(0, mutable.length)];
         dispatch_async(dispatch_get_main_queue(), ^{
-            strongSelf->_codeNode.attributedText = [mutable copy];
+            strongSelf.appliedAttr = mutable;
+            strongSelf.codeNode.attributedText = [mutable copy];
             strongSelf->_hasCachedMaxLineWidth = NO;
             strongSelf->_hasCachedHeight = NO;
-            // 异步计算内容宽度，避免阻塞主线程
             [strongSelf updateCodeContentWidthAsync];
-            [UIView performWithoutAnimation:^{
-                [strongSelf->_scrollNode setNeedsLayout];
-                // 避免强制同步布局，减轻主线程抖动
-                [strongSelf setNeedsLayout];
-            }];
+            [strongSelf setNeedsLayout];
         });
     });
 }

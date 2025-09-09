@@ -30,6 +30,9 @@
 @property (nonatomic, strong) NSArray *attachmentsData; // 原始附件数据
 @property (nonatomic, strong) NSMutableDictionary<NSString *, ASDisplayNode *> *nodeCache;
 @property (nonatomic, assign) BOOL isUpdating;
+// 新增：附件缩略图尺寸与间距（便于统一调节）
+@property (nonatomic, assign) CGFloat attachmentImageSize;
+@property (nonatomic, assign) CGFloat attachmentSpacing;
 // 恢复AIMarkdownParser以保持富文本效果
 @property (nonatomic, strong) AIMarkdownParser *markdownParser;
 @property (nonatomic, strong) NSArray<AIMarkdownBlock *> *markdownBlocks;
@@ -87,6 +90,10 @@
         _isLayoutStable = YES;
         _heightCache = [NSMutableDictionary dictionary];
         
+        // 附件缩略图默认尺寸与间距（可按需调整）
+        _attachmentImageSize = 80.0;
+        _attachmentSpacing = 6.0;
+        
         // 新增：首行渲染前隐藏
         _startHiddenUntilFirstLine = (!isFromUser && (message.length == 0));
         
@@ -123,6 +130,9 @@
                 [self layoutIfNeeded];
             });
         }
+        
+        // 关键修复：确保附件数据在重新进入时也能正确显示
+        _attachmentsData = @[];
     }
     return self;
 }
@@ -176,30 +186,28 @@
         if (renderChildren.count > 0) {
             [children addObjectsFromArray:renderChildren];
         }
-        // 若有附件，追加一个水平容器
+        // 若有附件，使用非滚动的水平布局直接展示（不限制总行宽）
         if (strongSelf.attachmentsData.count > 0) {
-            if (!strongSelf.attachmentsContainerNode) {
-                strongSelf.attachmentsContainerNode = [[ASDisplayNode alloc] init];
-                strongSelf.attachmentsContainerNode.automaticallyManagesSubnodes = YES;
-            }
-            strongSelf.attachmentsContainerNode.layoutSpecBlock = ^ASLayoutSpec * _Nonnull(__kindof ASDisplayNode * _Nonnull node2, ASSizeRange sizeRange2) {
-                NSMutableArray *thumbNodes = [NSMutableArray array];
-                NSInteger max = MIN(strongSelf.attachmentsData.count, 3);
-                for (NSInteger i = 0; i < max; i++) {
-                    id a = strongSelf.attachmentsData[i];
-                    ASDisplayNode *thumb = [strongSelf createAttachmentThumbNode:a];
-                    if (thumb) { [thumbNodes addObject:thumb]; }
+            NSMutableArray<ASDisplayNode *> *thumbs = [NSMutableArray array];
+            for (id att in strongSelf.attachmentsData) {
+                ASDisplayNode *thumb = [strongSelf createAttachmentThumbNode:att];
+                if (thumb) {
+                    // 固定缩略图尺寸，由 createAttachmentThumbNode 负责
+                    thumb.style.flexShrink = 0.0;
+                    [thumbs addObject:thumb];
                 }
-                if (thumbNodes.count == 0) return [ASLayoutSpec new];
+            }
+            if (thumbs.count > 0) {
                 ASStackLayoutSpec *row = [ASStackLayoutSpec stackLayoutSpecWithDirection:ASStackLayoutDirectionHorizontal
-                                                                                spacing:8
-                                                                         justifyContent:ASStackLayoutJustifyContentStart
-                                                                             alignItems:ASStackLayoutAlignItemsStart
-                                                                               children:thumbNodes];
-                return row;
-            };
-            [children addObject:strongSelf.attachmentsContainerNode];
+                                                                                   spacing:strongSelf.attachmentSpacing
+                                                                            justifyContent:ASStackLayoutJustifyContentStart
+                                                                                alignItems:ASStackLayoutAlignItemsStart
+                                                                                  children:thumbs];
+                // 不再添加最大宽度限制，全部按缩略图宽度自然排列
+                [children addObject:row];
+            }
         }
+        // 关键修复：确保带有附件的消息也能正确显示文本内容
         if (children.count == 0 && (strongSelf.currentMessage.length > 0) && !strongSelf.isStreamingMode) {
             ASTextNode *placeholderNode = [[ASTextNode alloc] init];
             placeholderNode.attributedText = [strongSelf attributedStringForText:(strongSelf.currentMessage ?: @"")];
@@ -208,6 +216,16 @@
             placeholderNode.style.flexGrow = 1.0;
             placeholderNode.style.flexShrink = 1.0;
             [children addObject:placeholderNode];
+        }
+        
+        // 关键修复：如果只有附件没有文本内容，确保消息仍然可见
+        if (children.count == 0 && strongSelf.attachmentsData.count > 0) {
+            // 创建一个空的文本节点作为占位符，确保消息气泡可见
+            ASTextNode *emptyNode = [[ASTextNode alloc] init];
+            emptyNode.attributedText = [[NSAttributedString alloc] initWithString:@""];
+            emptyNode.style.flexGrow = 1.0;
+            emptyNode.style.flexShrink = 1.0;
+            [children addObject:emptyNode];
         }
         ASStackLayoutSpec *stack = [ASStackLayoutSpec stackLayoutSpecWithDirection:ASStackLayoutDirectionVertical
                                                                            spacing:8
@@ -243,8 +261,8 @@
         n.contentMode = UIViewContentModeScaleAspectFill;
         n.clipsToBounds = YES;
         n.cornerRadius = 8.0;
-        n.style.width = ASDimensionMake(180); // 3倍
-        n.style.height = ASDimensionMake(180);
+        n.style.width = ASDimensionMake(self.attachmentImageSize);
+        n.style.height = ASDimensionMake(self.attachmentImageSize);
         // 允许点击
         [(ASControlNode *)n addTarget:self action:@selector(thumbTapped:) forControlEvents:ASControlNodeEventTouchUpInside];
         // 标记为本地图片
@@ -258,8 +276,8 @@
         n.cornerRadius = 8.0;
         n.placeholderFadeDuration = 0.1;
         n.placeholderColor = [UIColor systemGray5Color];
-        n.style.width = ASDimensionMake(180); // 3倍
-        n.style.height = ASDimensionMake(180);
+        n.style.width = ASDimensionMake(self.attachmentImageSize);
+        n.style.height = ASDimensionMake(self.attachmentImageSize);
         // 允许点击
         [(ASControlNode *)n addTarget:self action:@selector(thumbTapped:) forControlEvents:ASControlNodeEventTouchUpInside];
         // 存储URL字符串
@@ -292,9 +310,12 @@
 }
 
 #pragma mark - Public
-- (void)setAttachments:(NSArray *)attachments {
-    self.attachmentsData = attachments;
-    // 触发布局
+-(void)setAttachments:(NSArray *)attachments {
+    self.attachmentsData = attachments ?: @[];
+    // 关键：不再使用滚动容器，直接请求重布局
+    if (self.currentMessage.length > 0) {
+        [self forceParseMessage:self.currentMessage];
+    }
     [self setNeedsLayout];
 }
 
@@ -1559,3 +1580,6 @@
 }
 
 @end
+
+
+
