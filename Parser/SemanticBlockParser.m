@@ -55,12 +55,13 @@
         [self reset];
         delta = fullText;
     } else {
-        // diverged but have a non-zero common prefix: keep prefix and append remainder
+        // diverged but have a non-zero common prefix
         if (prefixLen == 0) {
             [self reset];
             delta = fullText;
         } else {
-            // keep prefix part as seenPrefix then append remainder
+            // IMPORTANT: discard any pendingBuffer built from the old tail to avoid duplicate emission
+            [self.pendingBuffer setString:@""];
             [self.seenPrefix setString:[fullText substringToIndex:prefixLen]];
             delta = [fullText substringFromIndex:prefixLen];
         }
@@ -204,6 +205,17 @@
                     return firstLine;
                 } else {
                     // 标题不完整，等待更多内容
+                    // 但如果下一行立即是代码围栏，先只输出标题行，留下围栏给后续解析
+                    NSRange nextLineRange = [self firstLineRangeIn:[buffer substringFromIndex:NSMaxRange(headingLineRange)]];
+                    if (nextLineRange.length > 0) {
+                        NSRange absNext = NSMakeRange(NSMaxRange(headingLineRange), nextLineRange.length);
+                        NSString *nextLine = [buffer substringWithRange:absNext];
+                        NSString *trim = [nextLine stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+                        if ([trim hasPrefix:@"```"] || [trim hasPrefix:@"~~~"]) {
+                            if (consumedRangeOut) { *consumedRangeOut = headingLineRange; }
+                            return firstLine;
+                        }
+                    }
                     return @"";
                 }
             }
@@ -240,9 +252,36 @@
     }
 
     // 3) Paragraph: up to next blank line or the next fence line, whichever comes first
+    // 优先：若后续存在围栏行或水平分隔线行，先把当前段落截断在其之前
     NSRange nextFence = [self rangeOfFirstFenceLineAnywhereIn:buffer startFrom:0];
-    if (nextFence.location != NSNotFound && nextFence.location > 0) {
-        if (consumedRangeOut) { *consumedRangeOut = NSMakeRange(0, nextFence.location); }
+    // 搜索水平分隔线行（---/***/___ 且整行）
+    __block NSRange nextHR = NSMakeRange(NSNotFound, 0);
+    [buffer enumerateSubstringsInRange:NSMakeRange(0, buffer.length)
+                               options:NSStringEnumerationByLines
+                            usingBlock:^(NSString * _Nullable substring, NSRange substringRange, NSRange enclosingRange, BOOL * _Nonnull stop) {
+        if (nextHR.location != NSNotFound) { *stop = YES; return; }
+        NSString *trim = [substring stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+        if (trim.length == 0) { return; }
+        BOOL isHR = NO;
+        if (trim.length >= 3) {
+            if ([trim rangeOfString:@"^-{3,}$" options:NSRegularExpressionSearch].location != NSNotFound ||
+                [trim rangeOfString:@"^\*{3,}$" options:NSRegularExpressionSearch].location != NSNotFound ||
+                [trim rangeOfString:@"^_{3,}$" options:NSRegularExpressionSearch].location != NSNotFound) {
+                isHR = YES;
+            }
+        }
+        if (isHR) { nextHR = substringRange; *stop = YES; }
+    }];
+    NSUInteger cutAt = NSNotFound;
+    if (nextFence.location != NSNotFound) { cutAt = nextFence.location; }
+    if (nextHR.location != NSNotFound) { cutAt = (cutAt == NSNotFound ? nextHR.location : MIN(cutAt, nextHR.location)); }
+    // 兼容：若本行中间出现内联围栏标记 ``` 或 ~~~，也应在其前切断，避免把围栏并入段落
+    NSRange inlineTick = [buffer rangeOfString:@"```" options:0 range:NSMakeRange(0, buffer.length)];
+    NSRange inlineTilde = [buffer rangeOfString:@"~~~" options:0 range:NSMakeRange(0, buffer.length)];
+    if (inlineTick.location != NSNotFound) { cutAt = (cutAt == NSNotFound ? inlineTick.location : MIN(cutAt, inlineTick.location)); }
+    if (inlineTilde.location != NSNotFound) { cutAt = (cutAt == NSNotFound ? inlineTilde.location : MIN(cutAt, inlineTilde.location)); }
+    if (cutAt != NSNotFound && cutAt > 0) {
+        if (consumedRangeOut) { *consumedRangeOut = NSMakeRange(0, cutAt); }
         return [buffer substringWithRange:*consumedRangeOut];
     }
     // Improved: paragraph consumes until a blank line, but do not emit partial sentences mid-stream.

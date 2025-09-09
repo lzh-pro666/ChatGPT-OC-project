@@ -14,7 +14,8 @@ typedef NS_ENUM(NSInteger, AIMarkdownBlockType) {
     AIMarkdownBlockTypeHeading,     // level: 1..6
     AIMarkdownBlockTypeCodeBlock,   // language + code
     AIMarkdownBlockTypeListItem,
-    AIMarkdownBlockTypeQuote
+    AIMarkdownBlockTypeQuote,
+    AIMarkdownBlockTypeHorizontalRule
 };
 
 @interface AIMarkdownBlock : NSObject

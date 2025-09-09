@@ -396,9 +396,6 @@
     if (!CGSizeEqualToSize(self->_scrollNode.view.contentSize, target)) {
         self->_scrollNode.view.contentSize = target;
     }
-    // 调试：打印关键尺寸，便于定位滚动问题
-    NSLog(@"[AICodeBlockNode][layout] contentWidth=%.1f contentHeight=%.1f scrollBoundsW=%.1f contentSize=%@ frame=%@",
-          contentWidth, contentHeight, self->_scrollNode.view.bounds.size.width, NSStringFromCGSize(self->_scrollNode.view.contentSize), NSStringFromCGRect(self->_codeNode.frame));
 }
 
 - (void)setFixedContentWidth:(CGFloat)width {
@@ -548,3 +545,7 @@
 }
 
 @end
+
+
+
+

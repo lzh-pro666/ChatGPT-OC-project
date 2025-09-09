@@ -79,9 +79,7 @@
     }];
     
     // 缓存结果
-    [self.cache setObject:att forKey:cacheKey];
-    NSLog(@"AISyntaxHighlighter: 生成并缓存高亮结果，语言: %@，内容长度: %lu", lang, (unsigned long)code.length);
-    
+    [self.cache setObject:att forKey:cacheKey];    
     return att;
 }
 

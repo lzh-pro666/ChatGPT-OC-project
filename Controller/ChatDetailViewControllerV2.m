@@ -21,6 +21,7 @@
 #import "ImagePreviewOverlay.h"
 #import "SemanticBlockParser.h"
 
+
 // MARK: - 常量定义
 
 // MARK: - 测试开关
@@ -54,7 +55,6 @@ static const BOOL kUseRichMessageCell = YES;
 // MARK: - 流式更新相关属性
 @property (nonatomic, strong) NSMutableString *fullResponseBuffer; // 流式响应的完整文本缓冲区
 @property (nonatomic, weak) id currentUpdatingAINode; // 兼容普通与富文本节点
-@property (nonatomic, strong) NSMutableDictionary<NSString *, NSValue *> *nodeSizeCache; // 节点尺寸缓存
 @property (nonatomic, copy) NSString *lastDisplayedSubstring; // 上次显示的文本内容，用于按行更新检测和避免重复布局
 @property (nonatomic, assign) BOOL streamBusy; // 防重复/忙碌标记
 @property (nonatomic, assign) BOOL isUIUpdatePaused; // 新增：UI更新暂停标志
@@ -67,7 +67,7 @@ static const BOOL kUseRichMessageCell = YES;
 @property (nonatomic, weak) NSManagedObject *currentUpdatingAIMessage; // 正在更新的AI消息对象
 
 // MARK: - 布局优化属性
-@property (nonatomic, strong) NSMutableDictionary<NSString *, NSValue *> *heightCache; // 高度缓存：key为内容hash，value为CGSize
+// 已移除控制器层面的高度缓存，保留 Cell 内部高度缓存实现
 
 // MARK: - 滚动粘底属性
 @property (nonatomic, assign) BOOL shouldAutoScrollToBottom; // 当用户未手动上滑时，自动粘底
@@ -106,10 +106,8 @@ static const BOOL kUseRichMessageCell = YES;
     self.fullResponseBuffer = [NSMutableString string];
     self.selectedAttachments = [NSMutableArray array];
     
-    // 2. 初始化高度缓存系统
-    self.heightCache = [NSMutableDictionary dictionary];
+    // 2. 初始化高度缓存系统（控制器层缓存已移除，保留 Cell 内部实现）
     self.lastDisplayedSubstring = @"";
-    self.nodeSizeCache = [NSMutableDictionary dictionary]; // 新增：初始化节点尺寸缓存
     self.isUIUpdatePaused = NO; // 新增：初始化UI更新暂停标志
     self.semanticParser = [[SemanticBlockParser alloc] init];
     self.semanticRenderedBuffer = [NSMutableString string];
@@ -195,7 +193,7 @@ static const BOOL kUseRichMessageCell = YES;
     }
     
     // 重置动画与渲染状态
-    self.lastDisplayedSubstring = @"";
+    // 控制器层面的 lastDisplayedSubstring 已不再使用
     self.streamBusy = NO;
 }
 
@@ -204,7 +202,7 @@ static const BOOL kUseRichMessageCell = YES;
     @try {
         [self.tableNode.view removeObserver:self forKeyPath:@"contentSize"];
     } @catch (NSException *exception) {
-        NSLog(@"KVO removeObserver exception: %@", exception);
+        
     }
 
     [[NSNotificationCenter defaultCenter] removeObserver:self];
@@ -388,8 +386,8 @@ static const BOOL kUseRichMessageCell = YES;
     
     // 文本输入框 - 统一样式和约束
     self.inputTextView = [[UITextView alloc] init];
-    // 统一字体大小：16pt，与系统消息气泡保持一致
-    self.inputTextView.font = [UIFont systemFontOfSize:16];
+    // 统一字体大小：18pt，与气泡显示保持一致
+    self.inputTextView.font = [UIFont systemFontOfSize:18];
     self.inputTextView.delegate = self;
     // 启用滚动，支持超过4行后的滑动预览
     self.inputTextView.scrollEnabled = YES;
@@ -419,7 +417,7 @@ static const BOOL kUseRichMessageCell = YES;
     self.placeholderLabel = [[UILabel alloc] init];
     self.placeholderLabel.text = @"    给ChatGPT发送信息";
     self.placeholderLabel.textColor = [UIColor colorWithRed:0.6 green:0.6 blue:0.6 alpha:1.0]; // 更柔和的灰色
-    self.placeholderLabel.font = [UIFont systemFontOfSize:16]; // 与输入框字体保持一致
+    self.placeholderLabel.font = [UIFont systemFontOfSize:18]; // 与输入框字体保持一致
     self.placeholderLabel.translatesAutoresizingMaskIntoConstraints = NO;
     
     // 工具栏
@@ -451,7 +449,7 @@ static const BOOL kUseRichMessageCell = YES;
     
     // 3. 激活所有约束
     // 计算单行精确高度，确保初始状态稳定
-    CGFloat lineHeight = 16.0; // 16pt字体对应的行高
+    CGFloat lineHeight = self.inputTextView.font.lineHeight; // 与字体对应的行高
     UIEdgeInsets textInsets = self.inputTextView.textContainerInset;
     CGFloat singleLineHeight = lineHeight + textInsets.top + textInsets.bottom;
     self.inputTextViewHeightConstraint = [self.inputTextView.heightAnchor constraintEqualToConstant:singleLineHeight];
@@ -755,11 +753,7 @@ static const BOOL kUseRichMessageCell = YES;
 }
 
 // 新增：锚定粘底（保持底部对齐，避免"先扩展再滚动"）
-- (void)anchorStickToBottomPreservingOffset {
-    if ([self shouldPerformAutoScroll]) {
-        [self throttledEnsureBottomVisible];
-    }
-}
+
 
 // 新增：需要时进行锚定粘底
 - (void)anchorScrollToBottomIfNeeded {
@@ -768,23 +762,7 @@ static const BOOL kUseRichMessageCell = YES;
     }
 }
 
-- (BOOL)isScrolledToBottom {
-    if (!self.tableNode.view) return NO;
-    
-    CGFloat contentHeight = self.tableNode.view.contentSize.height;
-    CGFloat viewHeight = self.tableNode.view.bounds.size.height;
-    
-    // 如果内容还没填满一屏，也算是在底部
-    if (contentHeight < viewHeight) {
-        self.isNearBottom = YES;
-        return YES;
-    }
-    
-    // 统一使用与自动滚动相同的容差口径
-    BOOL isAtBottom = [self isNearBottomWithTolerance:120.0];
-    self.isNearBottom = isAtBottom;
-    return isAtBottom;
-}
+
 
 // 统一：确保底部可见（可选动画）
 - (void)ensureBottomVisible:(BOOL)animated {
@@ -796,13 +774,11 @@ static const BOOL kUseRichMessageCell = YES;
 }
 
 // 新增：内容高度显著变化时的即时滚动（针对代码块扩展）
-- (void)handleContentHeightChange {
-    [self performAutoScrollWithContext:@"handleContentHeightChange"];
-}
+
 
 // 新增：逐行渲染事件，保持底部可见（智能匹配代码块高度）
 - (void)handleRichMessageAppendLine:(NSNotification *)note {
-    NSLog(@"[AutoScroll] handleRichMessageAppendLine called");
+    
     // 逐行渲染时使用节流滚动，避免过于频繁
     [self throttledAutoScrollWithContext:@"handleRichMessageAppendLine"];
 }
@@ -961,7 +937,7 @@ static const BOOL kUseRichMessageCell = YES;
             [self.selectedAttachments addObject:image];
         } else {
             // 可选：在这里给用户一个提示，如 "最多只能添加3个附件"
-            NSLog(@"已达到附件数量上限");
+            
             break;
         }
     }
@@ -976,14 +952,14 @@ static const BOOL kUseRichMessageCell = YES;
     if (self.selectedAttachments.count < 3) {
         [self.selectedAttachments addObject:url];
     } else {
-        NSLog(@"已达到附件数量上限");
+        
         }
     } else {
         // 本地文件，添加到附件数组
         if (self.selectedAttachments.count < 3) {
             [self.selectedAttachments addObject:url];
         } else {
-            NSLog(@"已达到附件数量上限");
+            
         }
     }
     [self updateAttachmentsDisplay];
@@ -1002,7 +978,7 @@ static const BOOL kUseRichMessageCell = YES;
     NSInteger lineCount = [self calculateLineCountForTextView:textView];
     
     // 使用精确的行高计算，确保与初始设置一致
-    CGFloat lineHeight = 16.0; // 与字体大小保持一致
+    CGFloat lineHeight = self.inputTextView.font.lineHeight; // 与字体大小保持一致
     UIEdgeInsets insets = textView.textContainerInset;
     CGFloat singleLineHeight = lineHeight + insets.top + insets.bottom;
     
@@ -1064,7 +1040,7 @@ static const BOOL kUseRichMessageCell = YES;
     }
     
     // 使用固定的行高，与字体大小保持一致
-    CGFloat lineHeight = 16.0; // 与字体大小保持一致
+    CGFloat lineHeight = textView.font.lineHeight; // 与字体大小保持一致
     UIEdgeInsets insets = textView.textContainerInset;
     
     // 计算可用宽度
@@ -1182,27 +1158,25 @@ static const BOOL kUseRichMessageCell = YES;
     __weak typeof(self) weakSelf = self;
     if (imageURLsForThisRound.count > 0) {
         // 固定使用 gpt-4o 进行图片功能意图分类（与默认文本模型区分开），T=0.3
-        NSLog(@"[Intent] start classification (T=0.3) using vision selector model=gpt-4o");
+        
         [[APIManager sharedManager] classifyIntentWithMessages:messages temperature:0.3 completion:^(NSString * _Nullable label, NSError * _Nullable error) {
             __strong typeof(weakSelf) strongSelf = weakSelf;
             if (!strongSelf) return;
             if (error) {
-                NSLog(@"[Intent] classification failed: %@, fallback to 理解", error.localizedDescription);
                 label = @"理解";
             }
             NSString *decision = ([label isKindOfClass:[NSString class]] && [label containsString:@"生成"]) ? @"生成" : @"理解";
-            NSLog(@"[Intent] decision=%@", decision);
+            
 
             if ([decision isEqualToString:@"生成"]) {
                 // 图片生成：取第一张作为 base_image_url，提示词用最近用户纯文本
                 NSString *userText = [strongSelf latestUserPlainText] ?: @"";
                 NSString *baseURL = imageURLsForThisRound.firstObject.absoluteString ?: @"";
-                NSLog(@"[ImageGen] prompt=%@ base=%@", userText, baseURL);
+                
                 // 使用与"理解"相同的 DashScope Key
                 [[APIManager sharedManager] setApiKey:@"sk-ec4677b09f5a4126af3ad17d763c60ed"];
                 [[APIManager sharedManager] generateImageWithPrompt:userText baseImageURL:baseURL completion:^(NSArray<NSURL *> * _Nullable imageURLs, NSError * _Nullable genErr) {
                     if (genErr || imageURLs.count == 0) {
-                        NSLog(@"[ImageGen] failed: %@", genErr.localizedDescription);
                         // 移除思考视图并给出失败文案
                         strongSelf.isAIThinking = NO;
                         [strongSelf.tableNode performBatchUpdates:^{
@@ -1266,7 +1240,7 @@ static const BOOL kUseRichMessageCell = YES;
             } else {
                 [messages addObject:@{ @"role": @"user", @"content": contentParts }];
             }
-            NSLog(@"[MultiModal] model=qvq-plus images=%@", imageURLsForThisRound);
+            
 
             strongSelf.currentStreamingTask = [[APIManager sharedManager] streamingChatCompletionWithMessages:messages images:nil streamCallback:^(NSString *partialResponse, BOOL isDone, NSError *error) {
                 __strong typeof(weakSelf) sself = weakSelf;
@@ -1275,7 +1249,7 @@ static const BOOL kUseRichMessageCell = YES;
                 dispatch_async(dispatch_get_main_queue(), ^{
                     if (error) {
                         if (error.code != NSURLErrorCancelled) {
-                            NSLog(@"API Error: %@", error.localizedDescription);
+                            
                         }
                         sself.isAIThinking = NO;
                         [sself.tableNode performBatchUpdates:^{
@@ -1293,14 +1267,7 @@ static const BOOL kUseRichMessageCell = YES;
                     NSArray<NSString *> *newBlocks = [sself.semanticParser consumeFullText:partialResponse isDone:isDone];
                     if (newBlocks.count == 0) { return; }
                     NSString *displayText = [newBlocks componentsJoinedByString:@""];
-                    // Debug: log semantic blocks emission
-                    NSString *lastBlock = newBlocks.lastObject ?: @"";
-                    NSString *lastPreview = (lastBlock.length > 60) ? [[lastBlock substringToIndex:60] stringByAppendingString:@"…"] : lastBlock;
-                    NSLog(@"[SemanticBlocks][qvq-plus] emitted=%lu isDone=%@ lastLen=%lu lastPreview=%@",
-                          (unsigned long)newBlocks.count,
-                          (isDone ? @"YES" : @"NO"),
-                          (unsigned long)lastBlock.length,
-                          lastPreview);
+                    
                     // 累积到渲染缓冲，避免只显示本次块
                     [sself.semanticRenderedBuffer appendString:displayText];
                     NSString *accumulated = [sself.semanticRenderedBuffer copy];
@@ -1325,7 +1292,7 @@ static const BOOL kUseRichMessageCell = YES;
                                         [sself.tableNode performBatchUpdates:^{
                                             [sself.tableNode deleteRowsAtIndexPaths:@[currentThinkingPath] withRowAnimation:UITableViewRowAnimationNone];
                                         } completion:nil];
-                                        NSLog(@"[AutoScroll] Thinking row removed before first line render (multimodal)");
+                                        
                                     }
                                     
                                     // 然后开始渲染语义块
@@ -1382,7 +1349,7 @@ static const BOOL kUseRichMessageCell = YES;
         dispatch_async(dispatch_get_main_queue(), ^{
             if (error) {
                 if (error.code != NSURLErrorCancelled) {
-                    NSLog(@"API Error: %@", error.localizedDescription);
+                    
                 }
                 strongSelf.isAIThinking = NO;
                 [strongSelf.tableNode performBatchUpdates:^{
@@ -1406,14 +1373,7 @@ static const BOOL kUseRichMessageCell = YES;
 NSArray<NSString *> *newBlocks = [strongSelf.semanticParser consumeFullText:partialResponse isDone:isDone];
 if (newBlocks.count == 0) { return; }
 NSString *displayText = [newBlocks componentsJoinedByString:@""];
-// Debug: log semantic blocks emission
-NSString *lastBlock = newBlocks.lastObject ?: @"";
-NSString *lastPreview = (lastBlock.length > 60) ? [[lastBlock substringToIndex:60] stringByAppendingString:@"…"] : lastBlock;
-NSLog(@"[SemanticBlocks][plain] emitted=%lu isDone=%@ lastLen=%lu lastPreview=%@",
-      (unsigned long)newBlocks.count,
-      (isDone ? @"YES" : @"NO"),
-      (unsigned long)lastBlock.length,
-      lastPreview);
+// 
 // 累积本轮新块
 [strongSelf.semanticRenderedBuffer appendString:displayText];
 NSString *accumulated = [strongSelf.semanticRenderedBuffer copy];
@@ -1449,7 +1409,7 @@ NSString *accumulated = [strongSelf.semanticRenderedBuffer copy];
                                         [strongSelf.tableNode performBatchUpdates:^{
                                             [strongSelf.tableNode deleteRowsAtIndexPaths:@[currentThinkingPath] withRowAnimation:UITableViewRowAnimationNone];
                                         } completion:nil];
-                                        NSLog(@"[AutoScroll] Thinking row removed before first line render");
+                                        
                                     }
                                     
                                     // 然后开始渲染语义块
@@ -1515,31 +1475,8 @@ NSString *accumulated = [strongSelf.semanticRenderedBuffer copy];
                 attachments:(NSArray *)attachments
                 isFromUser:(BOOL)isFromUser
                 completion:(nullable void (^)(void))completion {
-    // 1) 构建消息内容（包含附件描述）
+    // 1) 直接使用文本；附件已在发送前上传并以 [附件链接：] 形式附加
     NSString *messageContent = text;
-    if (attachments.count > 0) {
-        NSMutableString *contentWithAttachments = [NSMutableString stringWithString:text ?: @""];
-        if (contentWithAttachments.length > 0) {
-            [contentWithAttachments appendString:@"\n\n"];
-        }
-        [contentWithAttachments appendString:@"[附件："];
-        for (NSInteger i = 0; i < attachments.count; i++) {
-            id attachment = attachments[i];
-            if (i > 0) [contentWithAttachments appendString:@", "];
-            if ([attachment isKindOfClass:[UIImage class]]) {
-                [contentWithAttachments appendString:@"图片"];
-            } else if ([attachment isKindOfClass:[NSURL class]]) {
-                NSURL *url = attachment;
-                if ([url.scheme isEqualToString:@"http"] || [url.scheme isEqualToString:@"https"]) {
-                    [contentWithAttachments appendString:@"网络图片"];
-                } else {
-                    [contentWithAttachments appendString:@"文件"];
-                }
-            }
-        }
-        [contentWithAttachments appendString:@"]"];
-        messageContent = [contentWithAttachments copy];
-    }
 
     // 2) 直接在数据源数组尾部追加（避免 reloadData）
     [[CoreDataManager sharedManager] addMessageToChat:self.chat content:messageContent isFromUser:isFromUser];
@@ -1732,7 +1669,7 @@ NSString *accumulated = [strongSelf.semanticRenderedBuffer copy];
 
 -(void)updateModelSelection:(NSString *)modelName button:(UIButton *)button {
     [APIManager sharedManager].currentModelName = modelName;
-    NSDictionary *displayMap = @{ @"gpt-5-chat": @"GPT-5", @"gpt-4.1": @"GPT-4.1", @"gpt-4o": @"GPT-4o" };
+    NSDictionary *displayMap = @{ @"gpt-5": @"GPT-5", @"gpt-4.1": @"GPT-4.1", @"gpt-4o": @"GPT-4o" };
     NSString *displayTitle = displayMap[modelName] ?: modelName;
     [button setTitle:displayTitle forState:UIControlStateNormal];
     [[NSUserDefaults standardUserDefaults] setObject:modelName forKey:@"SelectedModelName"];
@@ -1796,21 +1733,7 @@ NSString *accumulated = [strongSelf.semanticRenderedBuffer copy];
 
 
 // 新增：获取当前AI节点的索引路径
-- (NSIndexPath *)getCurrentAINodeIndexPath {
-    if (!self.currentUpdatingAIMessage || !self->_currentUpdatingAINode) {
-        return nil;
-    }
-    
-    // 在消息数组中查找当前更新的AI消息
-    for (NSInteger i = 0; i < self.messages.count; i++) {
-        NSManagedObject *message = self.messages[i];
-        if ([message.objectID isEqual:self.currentUpdatingAIMessage.objectID]) {
-            return [NSIndexPath indexPathForRow:i inSection:0];
-        }
-    }
-    
-    return nil;
-}
+
 
 // 提供稳定的测量约束，保证节点在预期宽度下计算高度
 - (ASSizeRange)tableNode:(ASTableNode *)tableNode constrainedSizeForRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -1979,11 +1902,10 @@ NSString *accumulated = [strongSelf.semanticRenderedBuffer copy];
 // 新增：统一的自动滚动协调器
 - (void)performAutoScrollWithContext:(NSString *)context {
     if (![self shouldPerformAutoScroll]) { 
-        NSLog(@"[AutoScroll] %@ - skipped, shouldPerformAutoScroll=NO", context);
         return; 
     }
     
-    NSLog(@"[AutoScroll] %@ - executing scroll", context);
+    
     UITableView *tv = self.tableNode.view;
     if (!tv) { return; }
     
@@ -1997,7 +1919,6 @@ NSString *accumulated = [strongSelf.semanticRenderedBuffer copy];
     CGFloat minOffsetY = -tv.adjustedContentInset.top;
     
     if (isnan(targetOffsetY) || isinf(targetOffsetY)) { 
-        NSLog(@"[AutoScroll] %@ - invalid targetOffsetY, skipping", context);
         return; 
     }
     if (targetOffsetY < minOffsetY) targetOffsetY = minOffsetY;
@@ -2005,15 +1926,13 @@ NSString *accumulated = [strongSelf.semanticRenderedBuffer copy];
     CGPoint currentOffset = tv.contentOffset;
     CGPoint targetOffset = CGPointMake(currentOffset.x, targetOffsetY);
     
-    NSLog(@"[AutoScroll] %@ - scrolling from {%.1f, %.1f} to {%.1f, %.1f}", 
-          context, currentOffset.x, currentOffset.y, targetOffset.x, targetOffset.y);
+    
     
     [tv setContentOffset:targetOffset animated:NO];
 }
 
 - (void)performAutoScrollWithContext:(NSString *)context animated:(BOOL)animated {
     if (![self shouldPerformAutoScroll]) {
-        NSLog(@"[AutoScroll] %@ - skipped, shouldPerformAutoScroll=NO", context);
         return;
     }
     UITableView *tv = self.tableNode.view;
@@ -2028,14 +1947,13 @@ NSString *accumulated = [strongSelf.semanticRenderedBuffer copy];
     if (targetOffsetY < minOffsetY) targetOffsetY = minOffsetY;
     CGPoint currentOffset = tv.contentOffset;
     CGPoint targetOffset = CGPointMake(currentOffset.x, targetOffsetY);
-    NSLog(@"[AutoScroll] %@ - scrolling(animated=%@) from {%.1f, %.1f} to {%.1f, %.1f}", context, (animated ? @"YES" : @"NO"), currentOffset.x, currentOffset.y, targetOffset.x, targetOffset.y);
+    
     [tv setContentOffset:targetOffset animated:animated];
 }
 
 // 新增：节流版本的自动滚动
 - (void)throttledAutoScrollWithContext:(NSString *)context {
     if (self.bottomAnchorScheduled) { 
-        NSLog(@"[AutoScroll] %@ - throttled, already scheduled", context);
             return;
         }
     
@@ -2051,40 +1969,29 @@ NSString *accumulated = [strongSelf.semanticRenderedBuffer copy];
 // 新增：智能滚动检测
 - (BOOL)shouldPerformAutoScroll {
     if (self.userIsDragging) { 
-        NSLog(@"[AutoScroll] shouldPerformAutoScroll=NO - user is dragging");
         return NO; 
     }
     
     if (self.codeBlockInteracting) {
-        NSLog(@"[AutoScroll] shouldPerformAutoScroll=NO - code block interacting");
         return NO;
-    }
-    
-    // 正在流式回复期间，保持粘底（除非用户在拖动）
-    if (self.isAwaitingResponse) {
-        NSLog(@"[AutoScroll] shouldPerformAutoScroll=YES - awaiting response");
-        return YES;
     }
     
     UITableView *tv = self.tableNode.view;
     if (!tv) { 
-        NSLog(@"[AutoScroll] shouldPerformAutoScroll=NO - no table view");
         return NO; 
     }
     CGFloat contentHeight = tv.contentSize.height;
     CGFloat viewHeight = tv.bounds.size.height;
     CGFloat currentOffset = tv.contentOffset.y;
     
-    // 如果内容还没填满一屏，始终应该自动滚动
+    // 如果内容还没填满一屏，也仅在接近底部时才允许自动滚动
     if (contentHeight <= viewHeight + 1.0) { 
-        NSLog(@"[AutoScroll] shouldPerformAutoScroll=YES - content fits in view");
-        return YES; 
+        return [self isNearBottomWithTolerance:120.0];
     }
     
     // 更宽松的底部检测，提高响应性
     BOOL nearBottom = [self isNearBottomWithTolerance:120.0];
-    NSLog(@"[AutoScroll] shouldPerformAutoScroll=%@ - contentH=%.1f viewH=%.1f offset=%.1f nearBottom=%@", 
-          nearBottom ? @"YES" : @"NO", contentHeight, viewHeight, currentOffset, nearBottom ? @"YES" : @"NO");
+    
     return nearBottom;
 }
 
@@ -2098,8 +2005,7 @@ NSString *accumulated = [strongSelf.semanticRenderedBuffer copy];
         // 检测内容高度的显著增长（通常由代码块扩展引起）
         CGFloat heightIncrease = newSize.height - oldSize.height;
         if (heightIncrease > 10.0) { // 高度增长超过10px
-            NSLog(@"[AutoScroll] contentSize changed from {%.1f, %.1f} to {%.1f, %.1f} (+%.1f)", 
-                  oldSize.width, oldSize.height, newSize.width, newSize.height, heightIncrease);
+            
             [self throttledAutoScrollWithContext:@"contentSizeChanged"];
         }
     } else {
@@ -2119,7 +2025,7 @@ NSString *accumulated = [strongSelf.semanticRenderedBuffer copy];
 }
 
 - (void)handleRichMessageWillAppendFirstLine:(NSNotification *)note {
-    NSLog(@"[AutoScroll] handleRichMessageWillAppendFirstLine called");
+    
     [self throttledAutoScrollWithContext:@"handleRichMessageWillAppendFirstLine"]; 
 }
 
@@ -2137,15 +2043,13 @@ NSString *accumulated = [strongSelf.semanticRenderedBuffer copy];
     CGFloat minOffsetY = -tv.adjustedContentInset.top;
     
     if (isnan(targetOffsetY) || isinf(targetOffsetY)) {
-        NSLog(@"[AutoScroll] forceScrollToBottom - invalid targetOffsetY, skipping");
         return;
     }
     if (targetOffsetY < minOffsetY) targetOffsetY = minOffsetY;
     
     CGPoint currentOffset = tv.contentOffset;
     CGPoint targetOffset = CGPointMake(currentOffset.x, targetOffsetY);
-    NSLog(@"[AutoScroll] forceScrollToBottom - scrolling from {%.1f, %.1f} to {%.1f, %.1f}",
-          currentOffset.x, currentOffset.y, targetOffset.x, targetOffset.y);
+    
     [tv setContentOffset:targetOffset animated:animated];
 }
 

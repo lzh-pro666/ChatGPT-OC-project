@@ -15,6 +15,8 @@
 #import <AsyncDisplayKit/ASButtonNode.h>
 #import <QuartzCore/QuartzCore.h>
 
+// 移除多余日志：不再使用宏禁用，直接删除调用
+
 // MARK: - 富文本消息节点
 @interface RichMessageCellNode ()
 @property (nonatomic, strong) ASDisplayNode *bubbleNode;
@@ -26,7 +28,7 @@
 @property (nonatomic, assign) NSInteger lastParsedLength;
 @property (nonatomic, copy) NSString *lastParsedText;
 @property (nonatomic, strong) NSArray<ASDisplayNode *> *renderNodes;
-@property (nonatomic, strong) ASDisplayNode *attachmentsContainerNode; // 新增：附件容器
+// 已移除未使用的附件容器属性
 @property (nonatomic, strong) NSArray *attachmentsData; // 原始附件数据
 @property (nonatomic, strong) NSMutableDictionary<NSString *, ASDisplayNode *> *nodeCache;
 @property (nonatomic, assign) BOOL isUpdating;
@@ -53,6 +55,7 @@
 
 // 新增：逐行渲染节奏与日志辅助
 @property (nonatomic, assign) NSTimeInterval lineRenderInterval; // 每行渲染间隔
+@property (nonatomic, assign) NSTimeInterval codeLineRenderInterval; // 代码行渲染间隔（更长，保证手势响应）
 @property (nonatomic, assign) NSInteger processedBlockCounter;   // 已处理块计数（用于日志）
 @property (nonatomic, assign) NSInteger currentBlockIndex;       // 当前块序号（1-based，用于日志）
 @property (nonatomic, assign) NSInteger currentBlockTotalLines;  // 当前块总行数（用于日志）
@@ -112,7 +115,8 @@
         [self parseMessage:message];
         
         // 新增：逐行渲染默认间隔与计数
-        _lineRenderInterval = 0.15; // 默认 150ms/行，与控制器保持一致
+        _lineRenderInterval = 0.15; // 默认 150ms/行
+        _codeLineRenderInterval = 0.28; // 代码行更慢，提升手势响应
         _processedBlockCounter = 0;
         _currentBlockIndex = 0;
         _currentBlockTotalLines = 0;
@@ -168,7 +172,7 @@
         return [ASLayoutSpec new];
     }
     // 使用解析生成的内容节点进行布局
-    UIColor *backgroundColor = self.isFromUser ? [UIColor systemBlueColor] : [UIColor systemGray5Color];
+    // 移除未使用的 backgroundColor 变量
 
     // 限制最大宽度为 75%，内部行宽也按屏幕宽度 * 0.75 动态计算
     CGFloat maxWidth = constrainedSize.max.width * 0.75;
@@ -330,9 +334,7 @@
     });
 }
 
-- (NSString *)currentMessage {
-    return _currentMessage;
-}
+// 已移除：冗余 getter currentMessage（使用默认合成访问器）
 
 - (void)updateMessageText:(NSString *)newMessage {
     if (self.isUpdating) return;
@@ -782,7 +784,6 @@
         existingCode = [existingCodeNode valueForKey:@"code"];
         existingLanguage = [existingCodeNode valueForKey:@"language"];
     } @catch (NSException *exception) {
-        NSLog(@"RichMessageCellNode: 无法获取代码块属性，需要重新创建: %@", exception.reason);
         return YES;
     }
     
@@ -1129,10 +1130,16 @@
     if (!self.currentBlockLineTasks) { self.currentBlockLineTasks = [NSMutableArray array]; }
     for (NSString *s in blocks) {
         if (s.length > 0) {
+            // 相邻去重（语义块级）：若与队尾相同则跳过
+            NSString *last = [self.pendingSemanticBlockQueue lastObject];
+            if (last && [last isEqualToString:s]) { continue; }
             [self.pendingSemanticBlockQueue addObject:s];
             // 同步累计 currentMessage，保持外部一致
             if (!self.currentMessage) { self.currentMessage = @""; }
-            self.currentMessage = [self.currentMessage stringByAppendingString:s];
+            // 若末尾与本块相同，避免重复追加
+            if (![self.currentMessage hasSuffix:s]) {
+                self.currentMessage = [self.currentMessage stringByAppendingString:s];
+            }
         }
     }
     self.lastParsedText = [self.currentMessage copy];
@@ -1173,15 +1180,7 @@
 }
 
 // 新增：按固定宽度切分纯文本为可视行（指定字体）
-- (NSArray<NSString *> *)lineFragmentsForPlainString:(NSString *)text font:(UIFont *)font width:(CGFloat)width {
-    if (text.length == 0) return @[];
-    NSMutableAttributedString *attr = [[NSMutableAttributedString alloc] initWithString:text];
-    [attr addAttributes:@{ NSFontAttributeName: font } range:NSMakeRange(0, attr.length)];
-    NSArray<NSAttributedString *> *attrLines = [self lineFragmentsForAttributedString:[attr copy] width:width];
-    NSMutableArray<NSString *> *lines = [NSMutableArray arrayWithCapacity:attrLines.count];
-    for (NSAttributedString *l in attrLines) { [lines addObject:l.string ?: @""]; }
-    return [lines copy];
-}
+// 已移除：按固定宽度切分纯文本为可视行（未使用）
 
 // 新增：为单个语义块文本生成逐行任务（后台解析与计算行）
 - (void)buildLineTasksForBlockText:(NSString *)blockText completion:(void (^)(NSArray<NSDictionary *> *tasks))completion {
@@ -1196,16 +1195,15 @@
         // 动态行宽：按设备屏幕宽度 * 0.75
         const CGFloat lineWidth = [strongSelf preferredTextMaxWidth];
         
-        NSLog(@"[LineRender][build] blockText=%@ len=%lu", (blockText.length > 60 ? [[blockText substringToIndex:60] stringByAppendingString:@"…"] : blockText), (unsigned long)blockText.length);
-        NSLog(@"[LineRender][build] markdownBlocks=%lu", (unsigned long)mdBlocks.count);
+        
         
                         for (AIMarkdownBlock *blk in mdBlocks) {
-                    NSLog(@"[LineRender][build] processing block type=%ld text=%@", (long)blk.type, (blk.text.length > 40 ? [[blk.text substringToIndex:40] stringByAppendingString:@"…"] : blk.text));
+                    
                     
                     if (blk.type == AIMarkdownBlockTypeCodeBlock) {
                         NSString *code = blk.code ?: @"";
                         NSString *lang = blk.language.length ? blk.language : @"plaintext";
-                        NSLog(@"[LineRender][build] code block lang=%@ codeLen=%lu", lang, (unsigned long)code.length);
+                        
                         
                         // 计算此代码块的最长行像素宽度，便于 AICodeBlockNode 设置固定内容宽度
                         CGFloat maxLineWidth = 0.0;
@@ -1220,7 +1218,7 @@
                             if (s.width > maxLineWidth) maxLineWidth = s.width;
                         }
                         maxLineWidth = ceil(maxLineWidth) + 4.0;
-                        NSLog(@"[LineRender][build] code lines=%lu maxLineWidth=%.1f", (unsigned long)codeLines.count, maxLineWidth);
+                        
                         
                         BOOL isFirst = YES;
                         for (NSString *line in codeLines) {
@@ -1244,7 +1242,7 @@
                                       range:NSMakeRange(0, headingText.length)];
                 
                 NSArray<NSAttributedString *> *lines = [strongSelf lineFragmentsForAttributedString:[headingText copy] width:lineWidth];
-                NSLog(@"[LineRender][build] heading lines=%lu", (unsigned long)lines.count);
+                
                 
                 for (NSAttributedString *l in lines) {
                     [tasks addObject:@{ @"type": @"text_line",
@@ -1259,7 +1257,7 @@
                 [strongSelf applyMarkdownStyles:paragraph];
                 
                 NSArray<NSAttributedString *> *lines = [strongSelf lineFragmentsForAttributedString:[paragraph copy] width:lineWidth];
-                NSLog(@"[LineRender][build] paragraph lines=%lu", (unsigned long)lines.count);
+                
                 
                 for (NSAttributedString *l in lines) {
                     [tasks addObject:@{ @"type": @"text_line",
@@ -1270,7 +1268,7 @@
         
         // 记录当前块总行数用于日志
         strongSelf.currentBlockTotalLines = tasks.count;
-        NSLog(@"[LineRender][build] total tasks=%lu", (unsigned long)tasks.count);
+        
         
         if (completion) completion([tasks copy]);
     });
@@ -1293,7 +1291,7 @@
     
     // 验证块内容有效性
     if (!nextBlock || nextBlock.length == 0 || [nextBlock stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]].length == 0) {
-        NSLog(@"[LineRender][skip] block=%ld empty or whitespace only, skipping", (long)(self.processedBlockCounter + 1));
+        
         self.isProcessingSemanticBlock = NO;
         [self processNextSemanticBlockIfIdle]; // 继续处理下一个
         return;
@@ -1306,7 +1304,7 @@
     self.currentBlockTotalLines = 0;
     
     NSString *preview = (nextBlock.length > 60) ? [[nextBlock substringToIndex:60] stringByAppendingString:@"…"] : nextBlock;
-    NSLog(@"[LineRender][start] block=%ld len=%lu preview=%@", (long)self.currentBlockIndex, (unsigned long)nextBlock.length, preview ?: @"");
+    
     
     __weak typeof(self) weakSelf = self;
     [self buildLineTasksForBlockText:nextBlock completion:^(NSArray<NSDictionary *> *tasks) {
@@ -1316,7 +1314,7 @@
         void (^applyOnMain)(void) = ^{
             // 验证任务有效性
             if (!tasks || tasks.count == 0) {
-                NSLog(@"[LineRender][skip] block=%ld no valid tasks generated, skipping", (long)strongSelf.currentBlockIndex);
+                
                 strongSelf.isProcessingSemanticBlock = NO;
                 [strongSelf processNextSemanticBlockIfIdle]; // 继续处理下一个
                 return;
@@ -1327,7 +1325,7 @@
             strongSelf.activeAccumulatedCode = @"";
             strongSelf.isProcessingSemanticBlock = NO;
             
-            NSLog(@"[LineRender][ready] block=%ld tasks=%lu", (long)strongSelf.currentBlockIndex, (unsigned long)tasks.count);
+            
             
             [strongSelf scheduleNextLineTask];
         };
@@ -1345,7 +1343,7 @@
     if (self.currentBlockLineTasks.count == 0) {
         // 当前块结束
         if (self.currentBlockIndex > 0) {
-            NSLog(@"[LineRender][finish] block=%ld totalLines=%ld", (long)self.currentBlockIndex, (long)self.currentBlockTotalLines);
+            
         }
         // 尝试处理下一个块
         [self processNextSemanticBlockIfIdle];
@@ -1354,8 +1352,12 @@
     if (self.isSchedulingPaused) {
         return; // 暂停中不推进
     }
-    // 为了平滑，使用可配置间隔（首行立即渲染，其余延迟）
-    const NSTimeInterval interval = (self.currentBlockRenderedLineIndex == 0 ? 0.0 : (self.lineRenderInterval > 0.0 ? self.lineRenderInterval : 0.5));
+    // 为了平滑，使用可配置间隔（首行立即渲染，其余延迟）；代码行使用更长延迟
+    NSDictionary *nextTask = [self.currentBlockLineTasks firstObject];
+    BOOL isCode = [[nextTask objectForKey:@"type"] isEqualToString:@"code_line"];
+    NSTimeInterval baseInterval = isCode ? (self.codeLineRenderInterval > 0.0 ? self.codeLineRenderInterval : 0.3)
+                                         : (self.lineRenderInterval > 0.0 ? self.lineRenderInterval : 0.15);
+    const NSTimeInterval interval = (self.currentBlockRenderedLineIndex == 0 ? 0.0 : baseInterval);
     __weak typeof(self) weakSelf = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(interval * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         __strong typeof(weakSelf) strongSelf = weakSelf;
@@ -1393,12 +1395,22 @@
     NSInteger total = self.currentBlockTotalLines;
     NSString *textPreviewForLog = @"";
     
-    NSLog(@"[LineRender][execute] block=%ld line=%ld/%ld type=%@", (long)blockIdx, (long)lineIdx, (long)total, type ?: @"");
+    
     
     if ([type isEqualToString:@"text_line"]) {
         NSAttributedString *line = task[@"attr"];
         if (line && line.length > 0) {
+            // 相邻文本节点内容相同则跳过，避免渲染重复行
+            ASDisplayNode *prev = self.renderNodes.lastObject;
+            if ([prev isKindOfClass:[ASTextNode class]]) {
+                ASTextNode *prevText = (ASTextNode *)prev;
+                if ([prevText.attributedText.string ?: @"" isEqualToString:line.string ?: @""]) {
+                    [self scheduleNextLineTask];
+                    return;
+                }
+            }
             ASTextNode *textNode = [[ASTextNode alloc] init];
+            textNode.layerBacked = YES; // 减少 UIView 开销
             textNode.attributedText = line;
             textNode.maximumNumberOfLines = 0;
             textNode.style.flexGrow = 1.0;
@@ -1412,9 +1424,9 @@
             self.renderNodes = [mutable copy];
             
             textPreviewForLog = line.string ?: @"";
-            NSLog(@"[LineRender][text] added textNode text=%@ len=%lu", textPreviewForLog, (unsigned long)line.length);
+            
         } else {
-            NSLog(@"[LineRender][text] invalid line data: attr=%@", line);
+            
             // 尝试使用备用文本创建
             NSString *fallbackText = @"";
             if ([task[@"attr"] isKindOfClass:[NSString class]]) {
@@ -1422,6 +1434,7 @@
             }
             if (fallbackText.length > 0) {
                 ASTextNode *textNode = [[ASTextNode alloc] init];
+                textNode.layerBacked = YES; // 减少 UIView 开销
                 textNode.attributedText = [self attributedStringForText:fallbackText];
                 textNode.maximumNumberOfLines = 0;
                 textNode.style.flexGrow = 1.0;
@@ -1433,7 +1446,7 @@
                 self.renderNodes = [mutable copy];
                 
                 textPreviewForLog = fallbackText;
-                NSLog(@"[LineRender][text] added fallback textNode text=%@", textPreviewForLog);
+                
             }
         }
     } else if ([type isEqualToString:@"code_line"]) {
@@ -1441,7 +1454,7 @@
         NSString *lineText = task[@"line"] ?: @"";
         BOOL isStart = [task[@"start"] boolValue];
         
-        NSLog(@"[LineRender][code] lang=%@ isStart=%@ lineText=%@", lang, (isStart ? @"YES" : @"NO"), lineText);
+        
         
         if (isStart || !self.activeCodeNode) {
             self.activeCodeNode = [[AICodeBlockNode alloc] initWithCode:@"" language:lang isFromUser:self.isFromUser];
@@ -1460,27 +1473,32 @@
             self.renderNodes = [mutable copy];
             self.activeAccumulatedCode = @"";
             
-            NSLog(@"[LineRender][code] created new codeNode lang=%@", lang);
+            
         }
         
         // 追加一行并更新代码块
         if (lineText && lineText.length > 0) {
+            // 若上一行相同，跳过重复追加
+            if ([self.activeAccumulatedCode hasSuffix:[@"\n" stringByAppendingString:lineText]] || [self.activeAccumulatedCode isEqualToString:lineText]) {
+                [self scheduleNextLineTask];
+                return;
+            }
             self.activeAccumulatedCode = self.activeAccumulatedCode.length > 0 ? [self.activeAccumulatedCode stringByAppendingFormat:@"\n%@", lineText] : lineText;
             [self.activeCodeNode updateCodeText:self.activeAccumulatedCode];
             textPreviewForLog = lineText;
             
-            NSLog(@"[LineRender][code] updated codeNode accumulatedLen=%lu", (unsigned long)self.activeAccumulatedCode.length);
+            
         } else {
-            NSLog(@"[LineRender][code] empty lineText, skipping update");
+            
         }
     }
     
     // 截断日志文本，避免过长
     NSString *preview = textPreviewForLog.length > 80 ? [[textPreviewForLog substringToIndex:80] stringByAppendingString:@"…"] : textPreviewForLog;
-    NSLog(@"[LineRender][complete] block=%ld line=%ld/%ld type=%@ text=%@", (long)blockIdx, (long)lineIdx, (long)total, type ?: @"", preview ?: @"");
     
-    // 立即布局更新并通知控制器粘底
-    [self immediateLayoutUpdate];
+    
+    // 使用节流布局更新，减少主线程压力并提升手势响应
+    [self performDelayedLayoutUpdate];
     
     // 调试：检查渲染节点状态
     [self debugRenderNodesState];
@@ -1497,32 +1515,7 @@
 }
 
 // 新增：调试渲染节点状态
-- (void)debugRenderNodesState {
-    NSLog(@"[LineRender][debug] renderNodes count=%lu", (unsigned long)self.renderNodes.count);
-    for (NSInteger i = 0; i < self.renderNodes.count; i++) {
-        ASDisplayNode *node = self.renderNodes[i];
-        if ([node isKindOfClass:[ASTextNode class]]) {
-            ASTextNode *textNode = (ASTextNode *)node;
-            NSString *text = textNode.attributedText.string ?: @"";
-            NSLog(@"[LineRender][debug] node[%ld] = ASTextNode text=%@ len=%lu alpha=%.2f", 
-                  (long)i, (text.length > 30 ? [[text substringToIndex:30] stringByAppendingString:@"…"] : text), 
-                  (unsigned long)text.length, textNode.alpha);
-        } else if ([node isKindOfClass:[AICodeBlockNode class]]) {
-            AICodeBlockNode *codeNode = (AICodeBlockNode *)node;
-            NSString *code = @"";
-            @try {
-                code = [codeNode valueForKey:@"code"] ?: @"";
-            } @catch (NSException *exception) {
-                code = @"<error>";
-            }
-            NSLog(@"[LineRender][debug] node[%ld] = AICodeBlockNode codeLen=%lu alpha=%.2f", 
-                  (long)i, (unsigned long)code.length, codeNode.alpha);
-        } else {
-            NSLog(@"[LineRender][debug] node[%ld] = %@ alpha=%.2f", 
-                  (long)i, NSStringFromClass([node class]), node.alpha);
-        }
-    }
-}
+- (void)debugRenderNodesState {}
 
 // 新增：统一将 Markdown 语义块转换为 ParserResult 的方法，避免重复实现
 - (NSArray<ParserResult *> *)convertMarkdownBlocks:(NSArray<AIMarkdownBlock *> *)markdownBlocks
