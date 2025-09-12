@@ -11,7 +11,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 + (instancetype)sharedManager;
 
-// 初始化（内部完成 OSSClient 配置）
+// 初始化（内部完成默认存储配置）
 - (void)setupIfNeeded;
 
 // 上传本地图片或文件 URL，完成回调在主线程

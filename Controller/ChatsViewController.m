@@ -163,6 +163,9 @@
             
             // 使用 AlertHelper 显示聊天操作菜单
             NSArray *actions = @[
+                @{@"重命名": ^{
+                    [self renameChatAtIndexPath:indexPath];
+                }},
                 @{@"删除": ^{
                     [self deleteChat:nil];
                 }}
@@ -179,18 +182,7 @@
     }
 }
 
-- (BOOL)canBecomeFirstResponder {
-    return YES; // 允许成为第一响应者，以便显示菜单
-}
-
-- (BOOL)canPerformAction:(SEL)action withSender:(id)sender {
-    // 只允许执行 deleteChat:
-    if (action == @selector(deleteChat:)) {
-        return YES;
-    }
-    return NO;
-}
-
+// 删除聊天
 - (void)deleteChat:(id)sender {
     NSIndexPath *indexPath = [self.tableView indexPathForSelectedRow];
     if (indexPath) {
@@ -220,6 +212,42 @@
     }
 }
 
+// 重命名聊天
+- (void)renameChatAtIndexPath:(NSIndexPath *)indexPath {
+    if (!indexPath || indexPath.row >= self.chatList.count) { return; }
+    NSManagedObject *chat = self.chatList[indexPath.row];
+    NSString *currentTitle = [chat valueForKey:@"title"] ?: @"";
+    
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"重命名聊天"
+                                                                   message:@"请输入新的标题"
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    
+    [alert addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
+        textField.text = currentTitle;
+        textField.placeholder = @"聊天标题";
+        textField.clearButtonMode = UITextFieldViewModeWhileEditing;
+        textField.returnKeyType = UIReturnKeyDone;
+    }];
+    
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"保存" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        __strong typeof(weakSelf) self = weakSelf;
+        NSString *newTitle = [[alert.textFields.firstObject.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] copy];
+        if (newTitle.length == 0) {
+            [AlertHelper showAlertOn:self withTitle:@"无效标题" message:@"标题不能为空。" buttonTitle:@"确定"];
+            return;
+        }
+        [chat setValue:newTitle forKey:@"title"];
+        [[CoreDataManager sharedManager] saveContext];
+        
+        // 仅刷新该行，避免整表刷新带来的打断
+        [self.tableView reloadRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationAutomatic];
+    }]];
+    
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
 - (void)viewWillDisappear:(BOOL)animated {
     [super viewWillDisappear:animated];
     
@@ -233,4 +261,4 @@
     }
 }
 
-@end 
+@end

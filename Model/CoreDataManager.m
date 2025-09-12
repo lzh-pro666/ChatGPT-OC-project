@@ -5,7 +5,7 @@
 
 + (instancetype)sharedManager {
     static CoreDataManager *sharedManager = nil;
-    // 用于确保某个代� �块在程序的整个生命周期中只执行一�，保证代� �块在多线程环境下只执行一�，即使多个线程同时调用，保证线程安全。
+    // 用于确保某个代码块在程序的整个生命周期中只执行一次，保证代码块在多线程环境下只执行一次，即使多个线程同时调用，保证线程安全。
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         sharedManager = [[self alloc] init];
@@ -14,18 +14,18 @@
 }
 
 
-#pragma mark - Core Data � �� �
+#pragma mark - Core Data 栈
 
 @synthesize persistentContainer = _persistentContainer;
 
 - (NSPersistentContainer *)persistentContainer {
-    // 懒� 载模式，只有在�一�访问时才初始化
+    // 懒加载模式，只有在第一次访问时才初始化
     if (_persistentContainer != nil) {
         return _persistentContainer;
     }
     
     _persistentContainer = [[NSPersistentContainer alloc] initWithName:@"chatgpttest2"];
-    // 调用 loadPersistentStoresWithCompletionHandler � 载持久化存储
+    // 调用 loadPersistentStoresWithCompletionHandler 方法加载持久化存储
     [_persistentContainer loadPersistentStoresWithCompletionHandler:^(NSPersistentStoreDescription *storeDescription, NSError *error) {
         if (error != nil) {
             NSLog(@"Unresolved error %@, %@", error, error.userInfo);
@@ -99,7 +99,7 @@
 
 - (NSArray *)fetchMessagesForChat:(id)chat {
     NSFetchRequest *request = [NSFetchRequest fetchRequestWithEntityName:@"Message"];
-    // 这行代� �的作用是创建一个谓词（Predicate），用于过滤 Core Data 查询结果，限制只返回与指定 Chat 对象关联的 Message 实体。
+    // 这行代码的作用是创建一个谓词（Predicate），用于过滤 Core Data 查询结果，限制只返回与指定 Chat 对象关联的 Message 实体。
     NSPredicate *predicate = [NSPredicate predicateWithFormat:@"chat == %@", chat];
     NSSortDescriptor *sortByDate = [NSSortDescriptor sortDescriptorWithKey:@"date" ascending:YES];
     
@@ -125,10 +125,10 @@
         // 创建示例聊天
         id chat1 = [self createNewChatWithTitle:@"iOS应用界面设计讨论"];
 
-        // 为�一个聊天添� 消息示例
+        // 为一个聊天添加消息示例
         [self addMessageToChat:chat1 content:@"您好！我是ChatGPT，一个AI助手。我可以帮助您解答问题，请问有什么我可以帮您的吗？" isFromUser:NO];
-        [self addMessageToChat:chat1 content:@"� 能帮我解释一下iOS的导航模式吗？" isFromUser:YES];
-        [self addMessageToChat:chat1 content:@"iOS有� 种主要的导航模式：\n\n1. 层级导航（Hierarchical）\n- 使用UINavigationController\n- 适合展示层级内容\n- 支持返回手势\n\n2. 平铺导航（Flat）\n- 使用UITabBarController\n- 适合同级内容切换\n- 底部� �签� �导航\n\n3. 模态导航（Modal）\n- 临时打断当前任务\n- 完整的上下文切换\n- 支持多种展示方式" isFromUser:NO];
+        [self addMessageToChat:chat1 content:@"可以帮我解释一下iOS的导航模式吗？" isFromUser:YES];
+        [self addMessageToChat:chat1 content:@"iOS有两种主要的导航模式：\n\n1. 层级导航（Hierarchical）\n- 使用UINavigationController\n- 适合展示层级内容\n- 支持返回手势\n\n2. 平铺导航（Flat）\n- 使用UITabBarController\n- 适合同级内容切换\n- 底部标签栏导航\n\n3. 模态导航（Modal）\n- 临时打断当前任务\n- 完整的上下文切换\n- 支持多种展示方式" isFromUser:NO];
         
         NSLog(@"已创建初始聊天数据");
     }

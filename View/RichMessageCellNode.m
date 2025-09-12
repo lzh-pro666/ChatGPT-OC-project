@@ -65,6 +65,12 @@
 @property (nonatomic, assign) BOOL startHiddenUntilFirstLine;
 // 新增：调度暂停标记（用户滑动期间暂停逐行推进）
 @property (nonatomic, assign) BOOL isSchedulingPaused;
+// 新增：逐行通知帧级合并器
+@property (nonatomic, strong) CADisplayLink *lineNotifyLink;
+@property (nonatomic, assign) BOOL pendingLineNotify;
+// 新增：逐行渲染最小间隔（双保险，避免过密调度）
+@property (nonatomic, assign) NSTimeInterval minLineRenderInterval;
+@property (nonatomic, assign) NSTimeInterval lastLineRenderTime;
 @end
 
 @implementation RichMessageCellNode
@@ -121,6 +127,8 @@
         _currentBlockIndex = 0;
         _currentBlockTotalLines = 0;
         _currentBlockRenderedLineIndex = 0;
+        _minLineRenderInterval = 0.05; // 每行至少 50ms 间隔
+        _lastLineRenderTime = 0;
         
         // 关键改进：确保富文本效果持久化，重新进入聊天界面时不会丢失
         if (message.length > 0) {
@@ -162,6 +170,12 @@
         self.bubbleNode.hidden = YES;
         self.contentNode.hidden = YES;
     }
+
+    // 初始化逐行通知的帧级合并器（默认暂停，按需激活）
+    self.pendingLineNotify = NO;
+    self.lineNotifyLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(_onLineNotifyTick:)];
+    [self.lineNotifyLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+    self.lineNotifyLink.paused = YES;
 }
 
 // MARK: - Layout
@@ -174,9 +188,32 @@
     // 使用解析生成的内容节点进行布局
     // 移除未使用的 backgroundColor 变量
 
-    // 限制最大宽度为 75%，内部行宽也按屏幕宽度 * 0.75 动态计算
-    CGFloat maxWidth = constrainedSize.max.width * 0.75;
-    self.contentNode.style.maxWidth = ASDimensionMake(maxWidth);
+    // 固定 + 单行自适应：默认固定 capWidth；若无附件且仅一行文本则按文本自然宽度收窄
+    CGFloat devicePreferred = [self preferredTextMaxWidth];
+    CGFloat capWidth = floor(MIN(constrainedSize.max.width, devicePreferred));
+    CGFloat finalWidth = capWidth;
+    BOOL canUseDynamicSingleLine = (self.renderNodes.count == 1);
+    if (canUseDynamicSingleLine) {
+        ASDisplayNode *only = self.renderNodes.firstObject;
+        if ([only isKindOfClass:[ASTextNode class]]) {
+            ASTextNode *t = (ASTextNode *)only;
+            NSString *s = t.attributedText.string ?: @"";
+            if (s.length > 0 && [s rangeOfString:@"\n"].location == NSNotFound) {
+                UIFont *font = [t.attributedText attribute:NSFontAttributeName atIndex:0 effectiveRange:NULL] ?: [UIFont systemFontOfSize:16];
+                CGSize sz = [s boundingRectWithSize:CGSizeMake(CGFLOAT_MAX, CGFLOAT_MAX)
+                                             options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
+                                          attributes:@{ NSFontAttributeName: font }
+                                             context:nil].size;
+                CGFloat desired = ceil(sz.width) + 30.0; // 左右内边距 15+15
+                finalWidth = MAX(60.0, MIN(desired, capWidth));
+            }
+        }
+    }
+    self.contentNode.style.width = ASDimensionMake(finalWidth);
+    self.contentNode.style.maxWidth = ASDimensionMake(finalWidth);
+    self.contentNode.style.minWidth = ASDimensionMake(finalWidth);
+    self.contentNode.style.flexGrow = 0.0;
+    self.contentNode.style.flexShrink = 0.0;
     
     // 为了避免末尾被裁剪，确保没有强制的 min/max height 限制
     self.contentNode.style.minHeight = ASDimensionMakeWithPoints(0);
@@ -800,19 +837,11 @@
 
 // 新增：富文本实时布局更新（无节流，确保实时显示）
 - (void)immediateLayoutUpdate {
-    // 富文本实时更新：立即布局，不进行节流
+    // 降低同步布局强度：仅标记需要布局，交由系统下一帧统一处理
     if ([NSThread isMainThread]) {
-        [UIView performWithoutAnimation:^{
-            [self setNeedsLayout];
-            [self layoutIfNeeded];
-        }];
+        [self setNeedsLayout];
     } else {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [UIView performWithoutAnimation:^{
-                [self setNeedsLayout];
-                [self layoutIfNeeded];
-            }];
-        });
+        dispatch_async(dispatch_get_main_queue(), ^{ [self setNeedsLayout]; });
     }
 }
 
@@ -913,21 +942,13 @@
 
 // 新增：延迟布局更新，减少TableView弹动
 - (void)performDelayedLayoutUpdate {
-    // 使用更激进的节流机制，提高渲染性能
+    // 使用时间阈值节流，仅提交 setNeedsLayout，避免 layoutIfNeeded
     static NSTimeInterval lastLayoutUpdateTime = 0;
     NSTimeInterval currentTime = [[NSDate date] timeIntervalSince1970];
-    
-    if (currentTime - lastLayoutUpdateTime < 0.05) { // 从100ms减少到50ms，提高响应速度
-        return;
-    }
-    
+    if (currentTime - lastLayoutUpdateTime < 0.05) { return; }
     lastLayoutUpdateTime = currentTime;
-    
-    // 关键优化：减少延迟时间，提高响应速度
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.02 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [UIView performWithoutAnimation:^{
-            [self setNeedsLayout];
-        }];
+        [self setNeedsLayout];
     });
 }
 
@@ -1080,6 +1101,8 @@
 // 在dealloc中清理缓存
 - (void)dealloc {
     [self clearCache];
+    [self.lineNotifyLink invalidate];
+    self.lineNotifyLink = nil;
 }
 
 // MARK: - 按行更新优化方法
@@ -1097,13 +1120,8 @@
     // 富文本逐行显示：每次都进行富文本解析，确保实时显示富文本效果
     [self forceParseMessage:newMessage];
     
-    // 强制布局更新，确保UI立即反映变化（无动画）
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [UIView performWithoutAnimation:^{
-            [self setNeedsLayout];
-            [self layoutIfNeeded];
-        }];
-    });
+    // 仅标记需要布局，避免同步布局
+    dispatch_async(dispatch_get_main_queue(), ^{ [self setNeedsLayout]; });
 }
 
 // 新增：暂停流式更新动画
@@ -1357,11 +1375,16 @@
     BOOL isCode = [[nextTask objectForKey:@"type"] isEqualToString:@"code_line"];
     NSTimeInterval baseInterval = isCode ? (self.codeLineRenderInterval > 0.0 ? self.codeLineRenderInterval : 0.3)
                                          : (self.lineRenderInterval > 0.0 ? self.lineRenderInterval : 0.15);
-    const NSTimeInterval interval = (self.currentBlockRenderedLineIndex == 0 ? 0.0 : baseInterval);
+    // 行级节流（双保险）：确保相邻两行至少间隔 minLineRenderInterval
+    NSTimeInterval nowTs = CACurrentMediaTime();
+    NSTimeInterval since = nowTs - self.lastLineRenderTime;
+    NSTimeInterval need = MAX(0.0, self.minLineRenderInterval - since);
+    const NSTimeInterval interval = (self.currentBlockRenderedLineIndex == 0 ? 0.0 : MAX(baseInterval, need));
     __weak typeof(self) weakSelf = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(interval * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         __strong typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf) return;
+        strongSelf.lastLineRenderTime = CACurrentMediaTime();
         if (strongSelf.isSchedulingPaused) { return; }
         [strongSelf performNextLineTask];
     });
@@ -1503,7 +1526,8 @@
     // 调试：检查渲染节点状态
     [self debugRenderNodesState];
     
-    [[NSNotificationCenter defaultCenter] postNotificationName:@"RichMessageCellNodeDidAppendLine" object:self];
+    // 合并逐行通知：只标记待通知，在下一帧发送一次
+    [self scheduleBatchedLineNotification];
     
     // 推进下一行
     [self scheduleNextLineTask];
@@ -1516,6 +1540,21 @@
 
 // 新增：调试渲染节点状态
 - (void)debugRenderNodesState {}
+
+// MARK: - 帧级合并通知
+- (void)scheduleBatchedLineNotification {
+    self.pendingLineNotify = YES;
+    self.lineNotifyLink.paused = NO;
+}
+
+- (void)_onLineNotifyTick:(CADisplayLink *)link {
+    if (!self.pendingLineNotify) {
+        link.paused = YES;
+        return;
+    }
+    self.pendingLineNotify = NO;
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"RichMessageCellNodeDidAppendLine" object:self];
+}
 
 // 新增：统一将 Markdown 语义块转换为 ParserResult 的方法，避免重复实现
 - (NSArray<ParserResult *> *)convertMarkdownBlocks:(NSArray<AIMarkdownBlock *> *)markdownBlocks

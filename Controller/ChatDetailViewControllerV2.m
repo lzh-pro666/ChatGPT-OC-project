@@ -20,6 +20,7 @@
 #import "OSSUploadManager.h"
 #import "ImagePreviewOverlay.h"
 #import "SemanticBlockParser.h"
+#import <QuartzCore/QuartzCore.h>
 
 
 // MARK: - 常量定义
@@ -76,9 +77,17 @@ static const BOOL kUseRichMessageCell = YES;
 @property (nonatomic, assign) CGFloat lastContentOffsetY; // 新增：记录上次滚动位置
 @property (nonatomic, assign) BOOL bottomAnchorScheduled; // 新增：粘底滚动节流标志
 @property (nonatomic, assign) BOOL codeBlockInteracting; // 新增：代码块内部交互中（横向拖动）
+@property (nonatomic, assign) BOOL isDecelerating; // 新增：减速中，暂停自动粘底
 
 // MARK: - 多模态控制
 @property (nonatomic, strong) NSArray<NSURL *> *pendingImageURLs; // 本轮要发送给多模态模型的图片URL
+
+// MARK: - 底部锚定合并器（减少 RunLoop 压力）
+@property (nonatomic, strong) CADisplayLink *bottomAnchorLink; // 每帧合并一次粘底滚动
+@property (nonatomic, assign) BOOL needsBottomAnchor; // 是否有待处理的粘底请求
+
+// MARK: - 生命周期标记
+@property (nonatomic, assign) BOOL didInitialAppear; // 首次进入窗口后再做初始 reload/滚动
 
 
 
@@ -141,9 +150,7 @@ static const BOOL kUseRichMessageCell = YES;
     if (@available(iOS 13.4, *)) {
         _tableNode.view.panGestureRecognizer.allowedScrollTypesMask = UIScrollTypeMaskAll;
     }
-    // 设置手势优先级，确保用户滑动优先响应
-    _tableNode.view.panGestureRecognizer.minimumNumberOfTouches = 1;
-    _tableNode.view.panGestureRecognizer.maximumNumberOfTouches = 1;
+    // 不限制触点数量，避免影响双指滚动等系统手势
     // _tableNode.view.panGestureRecognizer.delegate = self; // 禁止：系统要求其 delegate 必须为 scrollView 本身
     
     [self.view addSubnode:_tableNode];
@@ -169,12 +176,32 @@ static const BOOL kUseRichMessageCell = YES;
     
     // 9. 监控表格视图内容大小变化，用于自动滚动
     [self.tableNode.view addObserver:self forKeyPath:@"contentSize" options:NSKeyValueObservingOptionNew | NSKeyValueObservingOptionOld context:nil];
+
+    // 初始化底部锚定合并器：以帧为单位合并滚动请求，降低 RunLoop 压力
+    self.needsBottomAnchor = NO;
+    self.bottomAnchorLink = [CADisplayLink displayLinkWithTarget:self selector:@selector(_onBottomAnchorTick:)];
+    // 使用 CommonModes 确保在滑动中也能运行
+    [self.bottomAnchorLink addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+    self.bottomAnchorLink.paused = YES; // 按需激活
 }
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    [self fetchMessages];
-    [self.tableNode reloadData];
+    // 等待首次进入窗口后再 reload，避免未在 window 层级时的额外布局
+    if (self.didInitialAppear) {
+        [self fetchMessages];
+        [self.tableNode reloadData];
+    }
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    if (!self.didInitialAppear) {
+        self.didInitialAppear = YES;
+        [self fetchMessages];
+        [self.tableNode reloadData];
+        [self forceScrollToBottomAnimated:NO];
+    }
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
@@ -212,6 +239,10 @@ static const BOOL kUseRichMessageCell = YES;
         [[APIManager sharedManager] cancelStreamingTask:self.currentStreamingTask];
         self.currentStreamingTask = nil;
     }
+
+    // 释放显示链接
+    [self.bottomAnchorLink invalidate];
+    self.bottomAnchorLink = nil;
 }
 
 // MARK: - 初始化设置方法
@@ -758,7 +789,7 @@ static const BOOL kUseRichMessageCell = YES;
 // 新增：需要时进行锚定粘底
 - (void)anchorScrollToBottomIfNeeded {
     if ([self shouldPerformAutoScroll]) {
-        [self throttledEnsureBottomVisible];
+        [self requestBottomAnchorWithContext:@"anchorScrollToBottomIfNeeded"];
     }
 }
 
@@ -770,7 +801,7 @@ static const BOOL kUseRichMessageCell = YES;
 }
 
 - (void)throttledEnsureBottomVisible {
-    [self throttledAutoScrollWithContext:@"throttledEnsureBottomVisible"];
+    [self requestBottomAnchorWithContext:@"throttledEnsureBottomVisible"];
 }
 
 // 新增：内容高度显著变化时的即时滚动（针对代码块扩展）
@@ -778,9 +809,8 @@ static const BOOL kUseRichMessageCell = YES;
 
 // 新增：逐行渲染事件，保持底部可见（智能匹配代码块高度）
 - (void)handleRichMessageAppendLine:(NSNotification *)note {
-    
-    // 逐行渲染时使用节流滚动，避免过于频繁
-    [self throttledAutoScrollWithContext:@"handleRichMessageAppendLine"];
+    // 逐行渲染时合并到底部锚定显示，避免频繁 setContentOffset
+    [self requestBottomAnchorWithContext:@"handleRichMessageAppendLine"];
 }
 
 // MARK: - 附件管理
@@ -1167,6 +1197,10 @@ static const BOOL kUseRichMessageCell = YES;
             }
             NSString *decision = ([label isKindOfClass:[NSString class]] && [label containsString:@"生成"]) ? @"生成" : @"理解";
             
+            // 统一在进入分支前抓取旧配置，两个分支共用（完成或失败均恢复）
+            NSString *prevModel = [APIManager sharedManager].currentModelName ?: @"";
+            NSString *prevBaseURL = [[APIManager sharedManager] currentBaseURL] ?: @"";
+            NSString *prevApiKey = [[APIManager sharedManager] currentApiKey] ?: @"";
 
             if ([decision isEqualToString:@"生成"]) {
                 // 图片生成：取第一张作为 base_image_url，提示词用最近用户纯文本
@@ -1185,10 +1219,14 @@ static const BOOL kUseRichMessageCell = YES;
                         NSString *failText = @"抱歉，图片生成失败，请稍后再试。";
                         [strongSelf addMessageWithText:failText attachments:@[] isFromUser:NO completion:nil];
                         strongSelf.pendingImageURLs = nil;
+                        // 恢复用户原始配置
+                        [[APIManager sharedManager] setBaseURL:prevBaseURL];
+                        [[APIManager sharedManager] setApiKey:prevApiKey];
+                        [APIManager sharedManager].currentModelName = prevModel;
                         return;
                     }
                     // 生成成功：拼装带附件链接的AI消息（文本+缩略图）
-                    NSMutableString *aiText = [NSMutableString stringWithString:@"已生成图片。"]; // 文本不含链接块展示
+                    NSMutableString *aiText = [NSMutableString stringWithString:@"已生成图片。"];
                     [aiText appendString:@"\n\n[附件链接：\n"]; 
                     for (NSURL *u in imageURLs) {
                         [aiText appendFormat:@"- %@\n", u.absoluteString];
@@ -1202,15 +1240,15 @@ static const BOOL kUseRichMessageCell = YES;
                     } completion:nil];
                     [strongSelf addMessageWithText:aiText attachments:@[] isFromUser:NO completion:nil];
                     strongSelf.pendingImageURLs = nil;
+                    // 恢复用户原始配置
+                    [[APIManager sharedManager] setBaseURL:prevBaseURL];
+                    [[APIManager sharedManager] setApiKey:prevApiKey];
+                    [APIManager sharedManager].currentModelName = prevModel;
                 }];
                 return; // 生成分支结束
             }
 
             // 理解：切换到多模态端点与模型（qvq-plus），并确保使用流式
-            NSString *prevModel = [APIManager sharedManager].currentModelName ?: @"";
-            NSString *prevBaseURL = [[APIManager sharedManager] currentBaseURL] ?: @"";
-            NSString *prevApiKey = [[APIManager sharedManager] currentApiKey] ?: @"";
-
             [[APIManager sharedManager] setBaseURL:@"https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"]; 
             [[APIManager sharedManager] setApiKey:@"sk-ec4677b09f5a4126af3ad17d763c60ed"];
             [APIManager sharedManager].currentModelName = @"qvq-plus";
@@ -1300,9 +1338,7 @@ static const BOOL kUseRichMessageCell = YES;
                                             if ([node respondsToSelector:@selector(setNeedsLayout)]) {
                                                 [node setNeedsLayout];
                                             }
-                                            if ([node respondsToSelector:@selector(layoutIfNeeded)]) {
-                                                [node layoutIfNeeded];
-                                            }
+                                            // 减少同步布局，依赖帧级合并器
                                             [sself anchorScrollToBottomIfNeeded];
                                         }
                                     });
@@ -1417,9 +1453,7 @@ NSString *accumulated = [strongSelf.semanticRenderedBuffer copy];
                                     if ([node respondsToSelector:@selector(setNeedsLayout)]) {
                                         [node setNeedsLayout];
                                     }
-                                    if ([node respondsToSelector:@selector(layoutIfNeeded)]) {
-                                        [node layoutIfNeeded];
-                                    }
+                                    // 减少同步布局，依赖帧级合并器
                                     [strongSelf anchorScrollToBottomIfNeeded];
                                 }
                             });
@@ -1700,6 +1734,10 @@ NSString *accumulated = [strongSelf.semanticRenderedBuffer copy];
     
     // 关键优化：用户开始滑动时，暂停所有UI更新
     [self pauseUIUpdates];
+
+    // 取消本帧待处理的自动粘底，避免与用户手势抢夺
+    self.needsBottomAnchor = NO;
+    self.bottomAnchorLink.paused = YES;
 }
 
 - (void)scrollViewDidScroll:(UIScrollView *)scrollView {
@@ -1721,11 +1759,14 @@ NSString *accumulated = [strongSelf.semanticRenderedBuffer copy];
     if (!decelerate) {
         [self resumeUIUpdates];
     }
+    // 标记减速状态
+    self.isDecelerating = decelerate;
 }
 
 - (void)scrollViewDidEndDecelerating:(UIScrollView *)scrollView {
     self.shouldAutoScrollToBottom = self.isNearBottom;
     [self resumeUIUpdates];
+    self.isDecelerating = NO;
 }
 
 
@@ -1843,7 +1884,7 @@ NSString *accumulated = [strongSelf.semanticRenderedBuffer copy];
 // 新增：在布局完成后统一执行自动粘底（若接近底部）
 - (void)autoStickAfterUpdate {
     if (![self shouldPerformAutoScroll]) return;
-    [self throttledEnsureBottomVisible];
+    [self requestBottomAnchorWithContext:@"autoStickAfterUpdate"];
 }
 
 // 新增：在近底部时，保持底部对齐地执行更新（避免先扩展再滚动）
@@ -1855,16 +1896,9 @@ NSString *accumulated = [strongSelf.semanticRenderedBuffer copy];
     BOOL shouldStick = [self shouldPerformAutoScroll];
     [UIView performWithoutAnimation:^{
         updates();
-        [tv layoutIfNeeded];
+        // 避免同步布局；由 displayLink 合并器在下一帧统一处理
         if (shouldStick) {
-            CGFloat afterContentHeight = tv.contentSize.height;
-            CGFloat delta = afterContentHeight - beforeContentHeight;
-            if (delta > 0.0) {
-                // 保持底部间隙不变：向下补偿同等 delta
-                CGPoint newOffset = CGPointMake(beforeOffset.x, beforeOffset.y + delta);
-                [tv setContentOffset:newOffset animated:NO];
-            }
-            [self throttledEnsureBottomVisible];
+            [self requestBottomAnchorWithContext:@"performUpdatesPreservingBottom"]; // 合并到下一帧
         }
     }];
 }
@@ -1908,6 +1942,7 @@ NSString *accumulated = [strongSelf.semanticRenderedBuffer copy];
     
     UITableView *tv = self.tableNode.view;
     if (!tv) { return; }
+    if (!tv.window) { return; } // 未进入窗口，避免提前布局与滚动
     
     // 强制布局，确保内容大小是最新的
     [tv layoutIfNeeded];
@@ -1925,9 +1960,10 @@ NSString *accumulated = [strongSelf.semanticRenderedBuffer copy];
     
     CGPoint currentOffset = tv.contentOffset;
     CGPoint targetOffset = CGPointMake(currentOffset.x, targetOffsetY);
-    
-    
-    
+
+    // 距离阈值：若目标与当前小于 1pt，跳过，避免无意义设置干扰手势
+    if (fabs(currentOffset.y - targetOffset.y) < 1.0) { return; }
+
     [tv setContentOffset:targetOffset animated:NO];
 }
 
@@ -1937,6 +1973,7 @@ NSString *accumulated = [strongSelf.semanticRenderedBuffer copy];
     }
     UITableView *tv = self.tableNode.view;
     if (!tv) { return; }
+    if (!tv.window) { return; } // 未进入窗口，避免提前布局与滚动
     [tv layoutIfNeeded];
     CGFloat contentHeight = tv.contentSize.height;
     CGFloat viewHeight = tv.bounds.size.height;
@@ -1947,29 +1984,43 @@ NSString *accumulated = [strongSelf.semanticRenderedBuffer copy];
     if (targetOffsetY < minOffsetY) targetOffsetY = minOffsetY;
     CGPoint currentOffset = tv.contentOffset;
     CGPoint targetOffset = CGPointMake(currentOffset.x, targetOffsetY);
-    
+
+    if (fabs(currentOffset.y - targetOffset.y) < 1.0) { return; }
+
     [tv setContentOffset:targetOffset animated:animated];
+}
+
+#pragma mark - Bottom Anchor Coalescer
+
+- (void)requestBottomAnchorWithContext:(NSString *)context {
+    if (![self shouldPerformAutoScroll]) { return; }
+    self.needsBottomAnchor = YES;
+    self.bottomAnchorLink.paused = NO; // 激活到下一帧
+}
+
+- (void)_onBottomAnchorTick:(CADisplayLink *)link {
+    if (!self.needsBottomAnchor) {
+        link.paused = YES;
+        return;
+    }
+    self.needsBottomAnchor = NO;
+    [self performAutoScrollWithContext:@"displayLinkTick" animated:NO];
 }
 
 // 新增：节流版本的自动滚动
 - (void)throttledAutoScrollWithContext:(NSString *)context {
-    if (self.bottomAnchorScheduled) { 
-            return;
-        }
-    
-    self.bottomAnchorScheduled = YES;
-    NSString *capturedContext = [context copy];
-    
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.016 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        self.bottomAnchorScheduled = NO;
-        [self performAutoScrollWithContext:[NSString stringWithFormat:@"%@ (throttled)", capturedContext] animated:NO];
-         });
+    // 改为显示链接合并：避免频繁 setContentOffset 干扰滑动手势
+    [self requestBottomAnchorWithContext:context ?: @"throttledAutoScrollWithContext"];
  }
 
 // 新增：智能滚动检测
 - (BOOL)shouldPerformAutoScroll {
     if (self.userIsDragging) { 
         return NO; 
+    }
+    // 减速中：避免与系统减速动画竞争
+    if (self.isDecelerating) {
+        return NO;
     }
     
     if (self.codeBlockInteracting) {
@@ -2005,8 +2056,7 @@ NSString *accumulated = [strongSelf.semanticRenderedBuffer copy];
         // 检测内容高度的显著增长（通常由代码块扩展引起）
         CGFloat heightIncrease = newSize.height - oldSize.height;
         if (heightIncrease > 10.0) { // 高度增长超过10px
-            
-            [self throttledAutoScrollWithContext:@"contentSizeChanged"];
+            [self requestBottomAnchorWithContext:@"contentSizeChanged"];
         }
     } else {
         [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
@@ -2025,14 +2075,14 @@ NSString *accumulated = [strongSelf.semanticRenderedBuffer copy];
 }
 
 - (void)handleRichMessageWillAppendFirstLine:(NSNotification *)note {
-    
-    [self throttledAutoScrollWithContext:@"handleRichMessageWillAppendFirstLine"]; 
+    [self requestBottomAnchorWithContext:@"handleRichMessageWillAppendFirstLine"]; 
 }
 
 // 新增：强制滚动到底部（无条件，不经过 shouldPerformAutoScroll 判断）
 - (void)forceScrollToBottomAnimated:(BOOL)animated {
     UITableView *tv = self.tableNode.view;
     if (!tv) { return; }
+    if (!tv.window) { return; } // 未进入窗口，避免提前布局与滚动
     
     [tv layoutIfNeeded];
     

@@ -8,14 +8,10 @@ NS_ASSUME_NONNULL_BEGIN
 
 @interface CoreDataManager : NSObject
 
-/**
- * 应用程序的 Core Data 持久化容器。
- */
+// 应用程序的 Core Data 持久化容器。
 @property (readonly, strong) NSPersistentContainer *persistentContainer;
 
-/**
- * 用于 Core Data 操作的主托管对象上下文。
- */
+// 用于 Core Data 操作的主托管对象上下文
 @property (readonly, strong) NSManagedObjectContext *managedObjectContext;
 
 /**
@@ -24,16 +20,16 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)saveContext;
 
 /**
- * 创建一个具有指定� �题的新 Chat 实体。
- * @param title 新聊天的� �题。
+ * 创建一个具有指定标题的新 Chat 实体。
+ * @param title 新聊天的标题。
  * @return 新创建的 Chat 对象。
  */
 - (Chat *)createNewChatWithTitle:(NSString *)title;
 
 /**
- * 为指定聊天添� 一个新 Message 实体。
+ * 为指定聊天添加一个新 Message 实体。
  * @param chat 消息所属的 Chat 对象。
- * @param content 消息的文�内容。
+ * @param content 消息的文本内容。
  * @param isFromUser 布尔值，指示消息是否来自用户（YES）或 AI（NO）。
  * @return 新创建的 Message 对象。
  */
@@ -54,7 +50,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 /**
  * 如果数据库中没有聊天数据，则创建默认聊天数据。
- * @note 添� 一个示例聊天和消息以展示功能。
+ * @note 添加一个示例聊天和消息以展示功能。
  */
 - (void)setupDefaultChatsIfNeeded;
 
