@@ -27,6 +27,14 @@ typedef void (^ImageGenerationBlock)(NSArray<NSURL *> * _Nullable imageURLs, NSE
                                                        images:(nullable NSArray<UIImage *> *)images
                                                streamCallback:(StreamingResponseBlock)callback;
 
+// 按调用级别传入专用配置（不修改全局默认设置）
+// 纯文本/已预构造的 messages（可包含 image_url）
+- (NSURLSessionDataTask *)streamingChatCompletionWithMessages:(NSArray *)messages
+                                                        model:(NSString *)model
+                                                      baseURL:(NSString *)baseURLString
+                                                       apiKey:(NSString *)apiKey
+                                               streamCallback:(StreamingResponseBlock)callback;
+
 // 设置 API Key
 - (void)setApiKey:(NSString *)apiKey;
 // 获取当前 API Key（只读）
@@ -46,6 +54,12 @@ typedef void (^ImageGenerationBlock)(NSArray<NSURL *> * _Nullable imageURLs, NSE
 - (void)generateImageWithPrompt:(NSString *)prompt
                    baseImageURL:(NSString *)baseImageURL
                      completion:(ImageGenerationBlock)completion;
+
+// 图片生成（按调用级别传入专用 Key，不改动默认设置）
+- (void)generateImageWithPrompt:(NSString *)prompt
+                   baseImageURL:(NSString *)baseImageURL
+                         apiKey:(NSString *)apiKey
+                      completion:(ImageGenerationBlock)completion;
 @end
 
 NS_ASSUME_NONNULL_END 

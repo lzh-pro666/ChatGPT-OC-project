@@ -62,6 +62,8 @@ static const BOOL kUseRichMessageCell = YES;
 @property (nonatomic, assign) BOOL isAwaitingResponse; // 新增：是否在等待模型回复（驱动发送/暂停按钮）
 @property (nonatomic, strong) SemanticBlockParser *semanticParser; // 新增：语义块解析器
 @property (nonatomic, strong) NSMutableString *semanticRenderedBuffer; // 新增：已渲染的语义块累积
+@property (nonatomic, weak) ThinkingNode *currentThinkingNode; // 新增：当前思考节点（用于更新提示文案）
+@property (nonatomic, copy) NSString *thinkingHintText; // 新增：思考节点的提示文本
 
 // MARK: - 网络请求相关属性
 @property (nonatomic, strong) NSURLSessionDataTask *currentStreamingTask;
@@ -88,12 +90,57 @@ static const BOOL kUseRichMessageCell = YES;
 
 // MARK: - 生命周期标记
 @property (nonatomic, assign) BOOL didInitialAppear; // 首次进入窗口后再做初始 reload/滚动
+// MARK: - 键盘联动粘底控制
+@property (nonatomic, assign) BOOL stickOnKeyboardChange; // 键盘出现/隐藏时是否需要粘底（仅在接近底部时）
 
 
 
 @end
 
 @implementation ChatDetailViewControllerV2
+// MARK: - Chat 切换优化：在赋值时预加载并刷新，避免先返回旧界面再更新
+- (void)setChat:(id)chat {
+    if (_chat == chat) { return; }
+    _chat = chat;
+    // 1) 终止当前流式与思考状态
+    if (self.currentStreamingTask) {
+        [[APIManager sharedManager] cancelStreamingTask:self.currentStreamingTask];
+        self.currentStreamingTask = nil;
+    }
+    self.isAIThinking = NO;
+    self.streamBusy = NO;
+    [self.fullResponseBuffer setString:@""];
+    self.currentUpdatingAIMessage = nil;
+    self->_currentUpdatingAINode = nil;
+    self.pendingImageURLs = nil;
+    self.thinkingHintText = @"";
+    self->_currentThinkingNode = nil;
+
+    // 2) 清空底部附件与输入区状态
+    if (self.selectedAttachments.count > 0) {
+        [self.selectedAttachments removeAllObjects];
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self updateAttachmentsDisplay];
+        [self updateSendButtonState];
+    });
+
+    // 3) 预加载新聊天消息并刷新表格（在返回动画前完成）
+    self.messages = [[CoreDataManager sharedManager] fetchMessagesForChat:self.chat];
+    if (self.isViewLoaded && self.tableNode) {
+        // 无动画批量更新，避免闪烁
+        UITableView *tv = self.tableNode.view;
+        [UIView performWithoutAnimation:^{
+            [CATransaction begin];
+            [CATransaction setDisableActions:YES];
+            [self.tableNode reloadData];
+            [tv layoutIfNeeded];
+            [CATransaction commit];
+        }];
+        // 初次显示时不动画，避免闪烁；若不是底部，会在后续逻辑中自适应
+        [self forceScrollToBottomAnimated:NO];
+    }
+}
 // MARK: - 缩略图预览
 - (void)handleAttachmentPreview:(NSNotification *)note {
     id imgObj = note.userInfo[@"image"];
@@ -601,10 +648,14 @@ static const BOOL kUseRichMessageCell = YES;
     // 键盘动画的曲线类型（如缓入缓出）
     UIViewAnimationCurve curve = [notification.userInfo[UIKeyboardAnimationCurveUserInfoKey] integerValue];
     
+    BOOL wasNearBottom = [self isNearBottomWithTolerance:120.0];
+    self.stickOnKeyboardChange = wasNearBottom; // 仅在接近底部时记录需要粘底
     [UIView animateWithDuration:duration delay:0 options:(curve << 16) animations:^{
         self.inputContainerBottomConstraint.constant = -keyboardFrame.size.height;
         [self.view layoutIfNeeded];
-        [self forceScrollToBottomAnimated:NO];
+        if (self.stickOnKeyboardChange) {
+            [self performAutoScrollWithContext:@"keyboardWillShow" animated:NO];
+        }
     } completion:nil];
 }
 
@@ -615,8 +666,12 @@ static const BOOL kUseRichMessageCell = YES;
     [UIView animateWithDuration:duration delay:0 options:(curve << 16) animations:^{
         self.inputContainerBottomConstraint.constant = 0;
         [self.view layoutIfNeeded];
-        [self forceScrollToBottomAnimated:NO];
-    } completion:nil];
+        if (self.stickOnKeyboardChange) {
+            [self performAutoScrollWithContext:@"keyboardWillHide" animated:NO];
+        }
+    } completion:^(BOOL finished) {
+        self.stickOnKeyboardChange = NO; // 一次键盘周期后复位
+    }];
 }
 
 // MARK: - 消息处理
@@ -711,7 +766,13 @@ static const BOOL kUseRichMessageCell = YES;
     // 检查是否为思考节点
     if (self.isAIThinking && indexPath.row == self.messages.count) {
         return ^ASCellNode *{
-            return [[ThinkingNode alloc] init];
+            ThinkingNode *node = [[ThinkingNode alloc] init];
+            // 应用提示文本（若存在）
+            if ((self.thinkingHintText ?: @"").length > 0 && [node respondsToSelector:@selector(setHintText:)]) {
+                [node setHintText:self.thinkingHintText];
+            }
+            self->_currentThinkingNode = node;
+            return node;
         };
     }
     
@@ -729,7 +790,19 @@ static const BOOL kUseRichMessageCell = YES;
             RichMessageCellNode *rich = [[RichMessageCellNode alloc] initWithMessage:message isFromUser:isFromUser];
             // 设置默认的逐行渲染间隔（可按需调整）
             if ([rich respondsToSelector:@selector(setLineRenderInterval:)]) {
-                [rich setLineRenderInterval:0.15]; // 150ms/行，延缓渲染速度
+                [rich setLineRenderInterval:0.333]; // 统一 333ms/行（~20 帧@60Hz）
+            }
+            if ([rich respondsToSelector:@selector(setCodeLineRenderInterval:)]) {
+                SEL sel = @selector(setCodeLineRenderInterval:);
+                NSMethodSignature *sig = [rich methodSignatureForSelector:sel];
+                if (sig) {
+                    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+                    inv.selector = sel;
+                    inv.target = rich;
+                    NSTimeInterval codeMs = 0.333;
+                    [inv setArgument:&codeMs atIndex:2];
+                    [inv invoke];
+                }
             }
             if (attachments.count > 0 && [rich respondsToSelector:@selector(setAttachments:)]) {
                 [rich setAttachments:attachments];
@@ -1164,6 +1237,12 @@ static const BOOL kUseRichMessageCell = YES;
     [self.semanticRenderedBuffer setString:@""];
     // 步骤 1: 设置状态并计算出"思考视图"将要被插入的位置
     self.isAIThinking = YES;
+    // 若有待处理图片，先设置占位提示（分类后会更新为生成/理解）
+    if (self.pendingImageURLs.count > 0) {
+        self.thinkingHintText = @"正在分析图片意图…";
+    } else {
+        self.thinkingHintText = @"正在思考…";
+    }
     [self enterAwaitingState];
     NSIndexPath *thinkingIndexPath = [NSIndexPath indexPathForRow:self.messages.count inSection:0];
     
@@ -1197,19 +1276,20 @@ static const BOOL kUseRichMessageCell = YES;
             }
             NSString *decision = ([label isKindOfClass:[NSString class]] && [label containsString:@"生成"]) ? @"生成" : @"理解";
             
-            // 统一在进入分支前抓取旧配置，两个分支共用（完成或失败均恢复）
-            NSString *prevModel = [APIManager sharedManager].currentModelName ?: @"";
-            NSString *prevBaseURL = [[APIManager sharedManager] currentBaseURL] ?: @"";
-            NSString *prevApiKey = [[APIManager sharedManager] currentApiKey] ?: @"";
+            // 使用调用级别配置，避免修改全局默认设置
 
             if ([decision isEqualToString:@"生成"]) {
+                // 更新思考提示为“图片生成”
+                self.thinkingHintText = @"当前正在进行图片生成";
+                if (self->_currentThinkingNode && [self->_currentThinkingNode respondsToSelector:@selector(setHintText:)]) {
+                    [self->_currentThinkingNode setHintText:self.thinkingHintText];
+                }
                 // 图片生成：取第一张作为 base_image_url，提示词用最近用户纯文本
                 NSString *userText = [strongSelf latestUserPlainText] ?: @"";
                 NSString *baseURL = imageURLsForThisRound.firstObject.absoluteString ?: @"";
                 
-                // 使用与"理解"相同的 DashScope Key
-                [[APIManager sharedManager] setApiKey:@"sk-ec4677b09f5a4126af3ad17d763c60ed"];
-                [[APIManager sharedManager] generateImageWithPrompt:userText baseImageURL:baseURL completion:^(NSArray<NSURL *> * _Nullable imageURLs, NSError * _Nullable genErr) {
+                // 直接使用调用级别的 DashScope Key，不修改全局设置
+                [[APIManager sharedManager] generateImageWithPrompt:userText baseImageURL:baseURL apiKey:@"sk-ec4677b09f5a4126af3ad17d763c60ed" completion:^(NSArray<NSURL *> * _Nullable imageURLs, NSError * _Nullable genErr) {
                     if (genErr || imageURLs.count == 0) {
                         // 移除思考视图并给出失败文案
                         strongSelf.isAIThinking = NO;
@@ -1219,10 +1299,8 @@ static const BOOL kUseRichMessageCell = YES;
                         NSString *failText = @"抱歉，图片生成失败，请稍后再试。";
                         [strongSelf addMessageWithText:failText attachments:@[] isFromUser:NO completion:nil];
                         strongSelf.pendingImageURLs = nil;
-                        // 恢复用户原始配置
-                        [[APIManager sharedManager] setBaseURL:prevBaseURL];
-                        [[APIManager sharedManager] setApiKey:prevApiKey];
-                        [APIManager sharedManager].currentModelName = prevModel;
+                        // 恢复发送按钮状态
+                        [strongSelf exitAwaitingState];
                         return;
                     }
                     // 生成成功：拼装带附件链接的AI消息（文本+缩略图）
@@ -1240,18 +1318,20 @@ static const BOOL kUseRichMessageCell = YES;
                     } completion:nil];
                     [strongSelf addMessageWithText:aiText attachments:@[] isFromUser:NO completion:nil];
                     strongSelf.pendingImageURLs = nil;
-                    // 恢复用户原始配置
-                    [[APIManager sharedManager] setBaseURL:prevBaseURL];
-                    [[APIManager sharedManager] setApiKey:prevApiKey];
-                    [APIManager sharedManager].currentModelName = prevModel;
+                    // 恢复发送按钮状态
+                    [strongSelf exitAwaitingState];
                 }];
                 return; // 生成分支结束
             }
 
-            // 理解：切换到多模态端点与模型（qvq-plus），并确保使用流式
-            [[APIManager sharedManager] setBaseURL:@"https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"]; 
-            [[APIManager sharedManager] setApiKey:@"sk-ec4677b09f5a4126af3ad17d763c60ed"];
-            [APIManager sharedManager].currentModelName = @"qvq-plus";
+            // 理解：使用 DashScope 兼容模式端点与 qvq-plus 模型（按调用级别传入）
+            // 更新思考提示为“图片理解”
+            self.thinkingHintText = @"当前正在进行图片理解";
+            if (self->_currentThinkingNode && [self->_currentThinkingNode respondsToSelector:@selector(setHintText:)]) {
+                [self->_currentThinkingNode setHintText:self.thinkingHintText];
+            }
+            NSString *dashscopeBaseURL = @"https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
+            NSString *dashscopeKey = @"sk-ec4677b09f5a4126af3ad17d763c60ed";
 
             // 将最后一条用户消息替换为 image_url + text 的数组
             NSInteger lastUserIndex = -1;
@@ -1280,7 +1360,7 @@ static const BOOL kUseRichMessageCell = YES;
             }
             
 
-            strongSelf.currentStreamingTask = [[APIManager sharedManager] streamingChatCompletionWithMessages:messages images:nil streamCallback:^(NSString *partialResponse, BOOL isDone, NSError *error) {
+            strongSelf.currentStreamingTask = [[APIManager sharedManager] streamingChatCompletionWithMessages:messages model:@"qvq-plus" baseURL:dashscopeBaseURL apiKey:dashscopeKey streamCallback:^(NSString *partialResponse, BOOL isDone, NSError *error) {
                 __strong typeof(weakSelf) sself = weakSelf;
                 if (!sself) { return; }
                 // 复用原有流式处理UI逻辑
@@ -1294,10 +1374,6 @@ static const BOOL kUseRichMessageCell = YES;
                             [sself.tableNode deleteRowsAtIndexPaths:@[thinkingIndexPath] withRowAnimation:UITableViewRowAnimationNone];
                         } completion:nil];
                         sself.streamBusy = NO;
-                        // 出错时恢复到用户的文本聊天配置
-                        [[APIManager sharedManager] setBaseURL:prevBaseURL];
-                        [[APIManager sharedManager] setApiKey:prevApiKey];
-                        [APIManager sharedManager].currentModelName = prevModel;
                         return;
                     }
                     [sself.fullResponseBuffer setString:partialResponse];
@@ -1365,10 +1441,6 @@ static const BOOL kUseRichMessageCell = YES;
                         }
                         sself.streamBusy = NO;
                         sself.pendingImageURLs = nil;
-                        // 恢复配置，仅做状态变更，不做任何 UI 操作
-                        [[APIManager sharedManager] setBaseURL:prevBaseURL];
-                        [[APIManager sharedManager] setApiKey:prevApiKey];
-                        [APIManager sharedManager].currentModelName = prevModel;
                         [sself exitAwaitingState];
                     }
                 });
@@ -2017,6 +2089,10 @@ NSString *accumulated = [strongSelf.semanticRenderedBuffer copy];
 - (BOOL)shouldPerformAutoScroll {
     if (self.userIsDragging) { 
         return NO; 
+    }
+    // 当输入框处于编辑状态时，若用户不在底部，则不强行粘底，避免“点输入框后滑动又被拉回底部”
+    if ([self.inputTextView isFirstResponder] && ![self isNearBottomWithTolerance:40.0]) {
+        return NO;
     }
     // 减速中：避免与系统减速动画竞争
     if (self.isDecelerating) {

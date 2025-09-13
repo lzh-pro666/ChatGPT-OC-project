@@ -78,8 +78,9 @@
 #pragma mark - ChatsViewControllerDelegate
 
 - (void)didSelectChat:(id)chat {
-    // 根据当前使用的控制器版本设置聊天数据
+    // 先同步将聊天应用到详情控制器，触发其内部 setChat: 的预加载与刷新
     [self applyChat:chat];
+    // 再返回根控制器，避免出现“先返回旧界面，再刷新成新聊天”的视觉跳变
     [self.rootNavigationController popToRootViewControllerAnimated:YES];
 }
 

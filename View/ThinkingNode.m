@@ -5,6 +5,7 @@
 // 新增一个“气泡”节点
 @property (nonatomic, strong) ASDisplayNode *bubbleNode;
 @property (nonatomic, strong) NSArray<ASDisplayNode *> *dotNodes;
+@property (nonatomic, strong) ASTextNode *hintTextNode;
 @end
 
 @implementation ThinkingNode
@@ -56,6 +57,12 @@ static inline CGFloat ThinkingBubbleMinHeight(void) {
         [dotNodes addObject:dotNode];
     }
     self.dotNodes = dotNodes;
+
+    // 提示文本节点（默认隐藏，按需显示）
+    _hintTextNode = [[ASTextNode alloc] init];
+    _hintTextNode.maximumNumberOfLines = 1;
+    _hintTextNode.truncationMode = NSLineBreakByTruncatingTail;
+    _hintTextNode.hidden = YES;
 }
 
 - (void)didEnterVisibleState {
@@ -96,17 +103,28 @@ static inline CGFloat ThinkingBubbleMinHeight(void) {
 // --- 核心修改：重写布局方法 ---
 - (ASLayoutSpec *)layoutSpecThatFits:(ASSizeRange)constrainedSize {
     
-    // 1. 创建一个水平布局来排列三个小圆点，并居中对齐
+    // 1. 创建一个水平布局：可选提示文本 + 小圆点
+    NSMutableArray<ASLayoutElement> *rowChildren = [NSMutableArray array];
+    if (!self.hintTextNode.hidden) {
+        [rowChildren addObject:self.hintTextNode];
+    }
     ASStackLayoutSpec *dotsLayout = [ASStackLayoutSpec horizontalStackLayoutSpec];
     dotsLayout.spacing = 8;
     dotsLayout.justifyContent = ASStackLayoutJustifyContentCenter;
     dotsLayout.alignItems = ASStackLayoutAlignItemsCenter;
     dotsLayout.children = self.dotNodes;
+    [rowChildren addObject:dotsLayout];
+
+    ASStackLayoutSpec *row = [ASStackLayoutSpec horizontalStackLayoutSpec];
+    row.spacing = 8;
+    row.justifyContent = ASStackLayoutJustifyContentCenter;
+    row.alignItems = ASStackLayoutAlignItemsCenter;
+    row.children = rowChildren;
 
     // 2. 使用居中布局确保三个点在可用空间内居中
     ASCenterLayoutSpec *centerSpec = [ASCenterLayoutSpec centerLayoutSpecWithCenteringOptions:ASCenterLayoutSpecCenteringXY
                                                                                 sizingOptions:ASCenterLayoutSpecSizingOptionMinimumXY
-                                                                                        child:dotsLayout];
+                                                                                        child:row];
     
     // 3. 将内容包裹起来，使用与消息气泡一致的内边距（10,15,10,15）
     ASInsetLayoutSpec *bubbleContentLayout = [ASInsetLayoutSpec insetLayoutSpecWithInsets:UIEdgeInsetsMake(10, 15, 10, 15) child:centerSpec];
@@ -139,6 +157,26 @@ static inline CGFloat ThinkingBubbleMinHeight(void) {
     // 保障 cell 自身的最小高度，避免父布局裁剪
     self.style.minHeight = ASDimensionMake(minH + 10.0); // 加上外边距的冗余
     return finalSpec;
+}
+
+#pragma mark - Public
+
+- (void)setHintText:(NSString *)text {
+    NSString *t = (text ?: @"");
+    if (t.length == 0) {
+        self.hintTextNode.hidden = YES;
+        self.hintTextNode.attributedText = nil;
+        [self setNeedsLayout];
+        return;
+    }
+    NSMutableParagraphStyle *ps = [[NSMutableParagraphStyle alloc] init];
+    ps.lineBreakMode = NSLineBreakByTruncatingTail;
+    NSDictionary *attrs = @{ NSFontAttributeName: [UIFont systemFontOfSize:15 weight:UIFontWeightRegular],
+                             NSForegroundColorAttributeName: [UIColor colorWithWhite:0.2 alpha:0.9],
+                             NSParagraphStyleAttributeName: ps };
+    self.hintTextNode.attributedText = [[NSAttributedString alloc] initWithString:t attributes:attrs];
+    self.hintTextNode.hidden = NO;
+    [self setNeedsLayout];
 }
 
 @end

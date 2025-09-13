@@ -261,6 +261,73 @@ static const NSTimeInterval kUIThrottleIntervalSeconds = 0.016; // ~60fps
     [task resume];
 }
 
+- (void)generateImageWithPrompt:(NSString *)prompt
+                   baseImageURL:(NSString *)baseImageURL
+                         apiKey:(NSString *)apiKey
+                      completion:(ImageGenerationBlock)completion {
+    NSString *apiKeySnapshot = apiKey ?: @"";
+    if (apiKeySnapshot.length == 0) {
+        if (completion) dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, [NSError errorWithDomain:@"com.yourapp.api" code:401 userInfo:@{NSLocalizedDescriptionKey:@"API Key 未设置"}]); });
+        return;
+    }
+
+    NSString *genEndpoint = @"https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
+    NSDictionary *messageContent = @{ @"role": @"user",
+                                      @"content": @[ @{ @"image": (baseImageURL ?: @"") },
+                                                      @{ @"text": (prompt ?: @"") } ] };
+    NSDictionary *body = @{ @"model": @"qwen-image-edit",
+                            @"input": @{ @"messages": @[ messageContent ] },
+                            @"parameters": @{ @"negative_prompt": @"",
+                                               @"watermark": @NO } };
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:genEndpoint]];
+    [req setHTTPMethod:@"POST"];
+    [req setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    [req setValue:[NSString stringWithFormat:@"Bearer %@", apiKeySnapshot] forHTTPHeaderField:@"Authorization"];
+    NSData *data = [NSJSONSerialization dataWithJSONObject:body options:0 error:nil];
+    [req setHTTPBody:data];
+
+    NSLog(@"[ImageGen/PerCall][Request] endpoint=%@ body=%@", genEndpoint, body);
+
+    NSURLSessionDataTask *task = [self.session dataTaskWithRequest:req completionHandler:^(NSData * _Nullable d, NSURLResponse * _Nullable r, NSError * _Nullable e) {
+        if (e) { dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion(nil, e); }); return; }
+        NSDictionary *obj = d ? [NSJSONSerialization JSONObjectWithData:d options:0 error:nil] : nil;
+        NSLog(@"[ImageGen/PerCall][Response] %@", obj);
+        if ([obj isKindOfClass:[NSDictionary class]] && obj[@"code"]) {
+            NSString *code = obj[@"code"] ?: @"Unknown";
+            NSString *msg = obj[@"message"] ?: @"Unknown error";
+            NSError *apiErr = [NSError errorWithDomain:@"com.yourapp.api" code:422 userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"[%@] %@", code, msg]}];
+            dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion(nil, apiErr); });
+            return;
+        }
+        NSMutableArray<NSURL *> *urls = [NSMutableArray array];
+        if ([obj isKindOfClass:[NSDictionary class]]) {
+            NSDictionary *output = obj[@"output"];
+            NSArray *choices = [output isKindOfClass:[NSDictionary class]] ? output[@"choices"] : nil;
+            if ([choices isKindOfClass:[NSArray class]] && choices.count > 0) {
+                NSDictionary *choice0 = choices.firstObject;
+                NSDictionary *message = [choice0 isKindOfClass:[NSDictionary class]] ? choice0[@"message"] : nil;
+                NSArray *contents = [message isKindOfClass:[NSDictionary class]] ? message[@"content"] : nil;
+                if ([contents isKindOfClass:[NSArray class]] && contents.count > 0) {
+                    for (NSDictionary *c in contents) {
+                        NSString *img = c[@"image"];
+                        if ([img isKindOfClass:[NSString class]] && img.length > 0) {
+                            NSURL *u = [NSURL URLWithString:img];
+                            if (u) { [urls addObject:u]; }
+                        }
+                    }
+                }
+            }
+        }
+        if (urls.count == 0) {
+            NSError *pe = [NSError errorWithDomain:@"com.yourapp.api" code:500 userInfo:@{NSLocalizedDescriptionKey:@"未从响应中解析到图片URL"}];
+            dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion(nil, pe); });
+            return;
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion([urls copy], nil); });
+    }];
+    [task resume];
+}
+
 - (NSURLSessionDataTask *)streamingChatCompletionWithMessages:(NSArray *)messages 
                                                streamCallback:(StreamingResponseBlock)callback {
     // 检查 API Key 是否已设置
@@ -475,6 +542,62 @@ static const NSTimeInterval kUIThrottleIntervalSeconds = 0.016; // ~60fps
         }
         return nil;
     }
+}
+
+// 按调用级别指定 baseURL/apiKey/model 的流式请求（不污染全局设置）
+- (NSURLSessionDataTask *)streamingChatCompletionWithMessages:(NSArray *)messages
+                                                        model:(NSString *)model
+                                                      baseURL:(NSString *)baseURLString
+                                                       apiKey:(NSString *)apiKey
+                                               streamCallback:(StreamingResponseBlock)callback {
+    NSString *apiKeySnapshot = apiKey ?: @"";
+    if (apiKeySnapshot.length == 0) {
+        NSError *error = [NSError errorWithDomain:@"com.yourapp.api"
+                                             code:401
+                                         userInfo:@{NSLocalizedDescriptionKey: @"API Key 未设置"}];
+        if (callback) {
+            dispatch_async(dispatch_get_main_queue(), ^{ callback(nil, YES, error); });
+        }
+        return nil;
+    }
+
+    NSDictionary *requestBody = @{ @"model": (model ?: @""),
+                                   @"messages": (messages ?: @[]),
+                                   @"stream": @YES };
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:(baseURLString ?: [self currentBaseURL])]];
+    [request setHTTPMethod:@"POST"];
+    [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    [request setValue:[NSString stringWithFormat:@"Bearer %@", apiKeySnapshot] forHTTPHeaderField:@"Authorization"];
+    NSError *jsonError = nil;
+    NSData *jsonData = [NSJSONSerialization dataWithJSONObject:requestBody options:0 error:&jsonError];
+    if (jsonError) {
+        if (callback) {
+            dispatch_async(dispatch_get_main_queue(), ^{ callback(nil, YES, jsonError); });
+        }
+        return nil;
+    }
+    [request setHTTPBody:jsonData];
+
+    NSURLSessionDataTask *task = [self.session dataTaskWithRequest:request];
+    if (!task) {
+        if (callback) {
+            NSError *taskError = [NSError errorWithDomain:@"com.yourapp.api" code:500 userInfo:@{NSLocalizedDescriptionKey: @"无法创建网络任务"}];
+            dispatch_async(dispatch_get_main_queue(), ^{ callback(nil, YES, taskError); });
+        }
+        return nil;
+    }
+
+    NSNumber *taskIdentifier = @(task.taskIdentifier);
+    dispatch_sync(self.stateAccessQueue, ^{
+        if (callback) { self.taskCallbacks[taskIdentifier] = [callback copy]; }
+        self.taskAccumulatedData[taskIdentifier] = [NSMutableString string];
+        self.taskBuffers[taskIdentifier] = [NSMutableData data];
+        [self.completedTaskIdentifiers removeObject:taskIdentifier];
+        [self.tasksWithPendingUpdate removeObject:taskIdentifier];
+    });
+    [self ensureThrottleTimerForTaskIdentifier:taskIdentifier];
+    [task resume];
+    return task;
 }
 
 // 简化 cancelStreamingTask

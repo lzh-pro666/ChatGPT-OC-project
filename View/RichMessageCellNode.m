@@ -71,6 +71,10 @@
 // 新增：逐行渲染最小间隔（双保险，避免过密调度）
 @property (nonatomic, assign) NSTimeInterval minLineRenderInterval;
 @property (nonatomic, assign) NSTimeInterval lastLineRenderTime;
+// 新增：交互减速支持（恢复到基线时回落）
+@property (nonatomic, assign) BOOL interactionSlowdownEnabled;
+@property (nonatomic, assign) NSTimeInterval baseLineRenderInterval;
+@property (nonatomic, assign) NSTimeInterval baseCodeLineRenderInterval;
 @end
 
 @implementation RichMessageCellNode
@@ -120,9 +124,11 @@
         // 强制首次解析消息内容
         [self parseMessage:message];
         
-        // 新增：逐行渲染默认间隔与计数
-        _lineRenderInterval = 0.15; // 默认 150ms/行
-        _codeLineRenderInterval = 0.28; // 代码行更慢，提升手势响应
+        // 新增：逐行渲染默认间隔与计数（统一 0.333s，约 20 帧@60Hz）
+        _lineRenderInterval = 0.333;
+        _codeLineRenderInterval = 0.333;
+        _baseLineRenderInterval = _lineRenderInterval;
+        _baseCodeLineRenderInterval = _codeLineRenderInterval;
         _processedBlockCounter = 0;
         _currentBlockIndex = 0;
         _currentBlockTotalLines = 0;
@@ -1132,6 +1138,9 @@
 // 新增：恢复流式更新动画
 - (void)resumeStreamingAnimation {
     self.isSchedulingPaused = NO;
+    // 恢复后维持统一节奏（0.333s），避免交互导致速率改变
+    self.lineRenderInterval = 0.333;
+    self.codeLineRenderInterval = 0.333;
     if (self.currentBlockLineTasks.count > 0 || self.pendingSemanticBlockQueue.count > 0) {
         [self scheduleNextLineTask];
     }
@@ -1536,6 +1545,10 @@
 // 新增：外部可配置每行渲染间隔
 - (void)setLineRenderInterval:(NSTimeInterval)lineRenderInterval {
     _lineRenderInterval = lineRenderInterval;
+}
+// 允许控制器设置代码行间隔（通过 NSInvocation 调用）
+- (void)setCodeLineRenderInterval:(NSTimeInterval)value {
+    _codeLineRenderInterval = value;
 }
 
 // 新增：调试渲染节点状态
