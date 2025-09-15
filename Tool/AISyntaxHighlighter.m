@@ -6,6 +6,7 @@
 //
 
 #import "AISyntaxHighlighter.h"
+#import "ChatGPT_OC_Clone-Swift.h"
 
 @implementation AICodeTheme
 
@@ -49,37 +50,13 @@
         NSLog(@"AISyntaxHighlighter: 使用缓存的高亮结果，语言: %@", lang);
         return cached;
     }
-    
-    UIFont *mono = [UIFont monospacedSystemFontOfSize:fontSize weight:UIFontWeightRegular];
-    NSMutableAttributedString *att = [[NSMutableAttributedString alloc] initWithString:code attributes:@{
-        NSFontAttributeName: mono,
-        NSForegroundColorAttributeName: self.theme.text
-    }];
-    
-    // 获取语言特定的规则
-    NSArray<NSDictionary *> *rules = [self rulesForLanguage:lang];
-    
-    // 应用高亮规则
-    [rules enumerateObjectsUsingBlock:^(NSDictionary *r, NSUInteger idx, BOOL *stop) {
-        NSString *pat = r[@"p"];
-        UIColor *color = r[@"c"];
-        NSInteger opts = [r[@"o"] integerValue];
-        
-        if (!pat || !color) return;
-        
-        NSRegularExpression *re = [NSRegularExpression regularExpressionWithPattern:pat options:opts error:nil];
-        if (!re) return;
-        
-        [re enumerateMatchesInString:att.string options:0 range:NSMakeRange(0, att.length)
-                          usingBlock:^(NSTextCheckingResult *m, NSMatchingFlags flags, BOOL *stop2) {
-            if (m.range.location != NSNotFound && m.range.length > 0) {
-                [att addAttributes:@{ NSForegroundColorAttributeName: color } range:m.range];
-            }
-        }];
-    }];
-    
-    // 缓存结果
-    [self.cache setObject:att forKey:cacheKey];    
+    // 使用 Highlightr（Swift 桥）
+    NSAttributedString *att = [[CodeHighlighterBridge shared] highlightWithCode:code language:lang fontSize:fontSize];
+    if (!att) {
+        UIFont *mono = [UIFont monospacedSystemFontOfSize:fontSize weight:UIFontWeightRegular];
+        att = [[NSAttributedString alloc] initWithString:code attributes:@{ NSFontAttributeName: mono, NSForegroundColorAttributeName: self.theme.text }];
+    }
+    [self.cache setObject:att forKey:cacheKey];
     return att;
 }
 

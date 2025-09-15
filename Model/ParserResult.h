@@ -1,10 +1,3 @@
-//
-//  ParserResult.h
-//  ChatGPT-OC-Clone
-//
-//  Created by AI Assistant on 2024/08/13.
-//
-
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 

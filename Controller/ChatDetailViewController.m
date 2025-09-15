@@ -15,9 +15,9 @@
 
 // MARK: - 常量定义
 // 每次定时器触发时显示的字数，调大此值可加快打字速度
-static const NSInteger kTypingSpeedCharacterChunk = 16;
-// 定时器触发间隔，调小此值可加快打字速度
-static const NSTimeInterval kTypingTimerInterval = 0.12; // 调整为与 SwiftUI 阈值同步，约 1.3 秒打完 64 字符
+static const NSInteger kTypingSpeedCharacterChunk = 1;
+// 定时器触发间隔（逐字符），可根据性能调优
+static const NSTimeInterval kTypingTimerInterval = 0.02;
 static const NSInteger kParserThresholdTextCount = 64;   // 解析阈值
 
 @interface ChatDetailViewController () <UITextViewDelegate>
@@ -398,19 +398,24 @@ static const NSInteger kParserThresholdTextCount = 64;   // 解析阈值
 
 // MARK: - 数据管理方法
 - (void)fetchMessages {
-    self.messages = [[CoreDataManager sharedManager] fetchMessagesForChat:self.chat];
-    // 如果没有消息，添加一条欢迎消息（简化版本）
-    if (self.messages.count == 0) {
-        NSString *welcomeMessage = @"您好！我是ChatGPT，一个AI助手。我可以帮助您解答问题，请问有什么我可以帮您的吗？\n\n我可以支持**粗体文本**和*斜体文本*格式。";
-        
-        [[CoreDataManager sharedManager] addMessageToChat:self.chat
-                                                  content:welcomeMessage
-                                               isFromUser:NO];
-        self.messages = [[CoreDataManager sharedManager] fetchMessagesForChat:self.chat];
-    }
-    
-    // 同步数据到 SwiftUI ViewModel
-    [self syncMessagesToSwiftUI];
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        NSArray *fetched = [[CoreDataManager sharedManager] fetchMessagesForChat:strongSelf.chat];
+        BOOL needWelcome = (fetched.count == 0);
+        if (needWelcome) {
+            NSString *welcomeMessage = @"您好！我是ChatGPT，一个AI助手。我可以帮助您解答问题，请问有什么我可以帮您的吗？\n\n我可以支持**粗体文本**和*斜体文本*格式。";
+            [[CoreDataManager sharedManager] addMessageToChat:strongSelf.chat
+                                                      content:welcomeMessage
+                                                   isFromUser:NO];
+            fetched = [[CoreDataManager sharedManager] fetchMessagesForChat:strongSelf.chat];
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            strongSelf.messages = [fetched mutableCopy];
+            [strongSelf syncMessagesToSwiftUI];
+        });
+    });
 }
 
 - (void)syncMessagesToSwiftUI {
@@ -475,7 +480,7 @@ static const NSInteger kParserThresholdTextCount = 64;   // 解析阈值
     [self textViewDidChange:self.inputTextView]; // 触发输入框高度更新
     [self.inputTextView resignFirstResponder];
     
-    // 发送消息后立即滚动到底部
+    // 发送消息后立即滚动到底部（交由 SwiftUI 侧执行）
     [self scrollToBottomAnimated:YES];
     
     // 保存用户消息到 CoreData
@@ -522,8 +527,6 @@ static const NSInteger kParserThresholdTextCount = 64;   // 解析阈值
     // SwiftUI 版本：使用流式响应更新方法
     dispatch_async(dispatch_get_main_queue(), ^{
         [self.chatViewModel updateStreamingResponse:message];
-        // 取消这里的主动滚动，由 SwiftUI 根据 isAtBottom && !userHasScrolled 自动处理
-        // [self scrollToBottomAnimated:YES];
     });
 }
 
@@ -770,42 +773,45 @@ static const NSInteger kParserThresholdTextCount = 64;   // 解析阈值
         __strong typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf) { return; }
         
-        dispatch_async(dispatch_get_main_queue(), ^{
+        // 将轻量UI更新与重处理拆分：主线程仅更新UI，字符串拼接等放到后台
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
             if (error) {
-                if (error.code != NSURLErrorCancelled) {
-                    NSLog(@"API Error: %@", error.localizedDescription);
-                }
-                strongSelf.isAIThinking = NO;
-                [strongSelf.chatViewModel setThinking:NO];
-                [strongSelf.chatViewModel setInteracting:NO];
-                [strongSelf.chatViewModel finishStreamingResponse];
-                [strongSelf stopTypingTimer];
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (error.code != NSURLErrorCancelled) {
+                        NSLog(@"API Error: %@", error.localizedDescription);
+                    }
+                    strongSelf.isAIThinking = NO;
+                    [strongSelf.chatViewModel setThinking:NO];
+                    [strongSelf.chatViewModel setInteracting:NO];
+                    [strongSelf.chatViewModel finishStreamingResponse];
+                    [strongSelf stopTypingTimer];
+                });
                 return;
             }
             
             // 4. 用最新返回的完整文本直接覆盖缓冲区
-            [strongSelf.fullResponseBuffer setString:partialResponse];
+            @autoreleasepool {
+                [strongSelf.fullResponseBuffer setString:partialResponse];
+            }
             
             // 5. 核心UI更新逻辑 - 通过 SwiftUI ViewModel
-            if (strongSelf.isAIThinking) {
-                // 这是第一次收到数据 - 创建消息
-                strongSelf.isAIThinking = NO;
-                
-                // 隐藏思考视图
-                [strongSelf.chatViewModel setThinking:NO];
-                
-                // a. 在数据源中创建AI消息记录 (初始内容为空)
-                strongSelf.currentUpdatingAIMessage = [[CoreDataManager sharedManager] addMessageToChat:strongSelf.chat content:@"" isFromUser:NO];
-                
-                // b. 启动打字机定时器
-                [strongSelf startTypingTimer];
-            }
-            
-            // 6. 流结束时的处理
-            if (isDone) {
-                strongSelf.currentStreamingTask = nil;
-                [strongSelf.chatViewModel finishStreamingResponse];
-            }
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (strongSelf.isAIThinking) {
+                    // 这是第一次收到数据 - 创建消息
+                    strongSelf.isAIThinking = NO;
+                    [strongSelf.chatViewModel setThinking:NO];
+                    strongSelf.currentUpdatingAIMessage = [[CoreDataManager sharedManager] addMessageToChat:strongSelf.chat content:@"" isFromUser:NO];
+                    [strongSelf startTypingTimer];
+                }
+                if (isDone) {
+                    strongSelf.currentStreamingTask = nil;
+                    [strongSelf.chatViewModel finishStreamingResponse];
+                }
+                // 结束或首包时再触发滚动，减少频率
+                if (isDone || strongSelf.displayedTextLength == 0) {
+                    [strongSelf.chatSwiftUIWrapper scrollToBottomWithAnimated:YES];
+                }
+            });
         });
     }];
 }
@@ -876,18 +882,19 @@ static const NSInteger kParserThresholdTextCount = 64;   // 解析阈值
 - (void)addMessageWithText:(NSString *)text
                 isFromUser:(BOOL)isFromUser
                 completion:(nullable void (^)(void))completion {
-    NSInteger currentCount = self.messages.count;
-    [[CoreDataManager sharedManager] addMessageToChat:self.chat content:text isFromUser:isFromUser];
-    [self fetchMessages];
-    
-    if (self.messages.count > currentCount) {
-        // 同步消息到 SwiftUI 并滚动到底部
-        [self syncMessagesToSwiftUI];
-        [self scrollToBottomAnimated:YES];
-        if (completion) {
-            completion();
-        }
-    }
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        [[CoreDataManager sharedManager] addMessageToChat:strongSelf.chat content:text isFromUser:isFromUser];
+        NSArray *fetched = [[CoreDataManager sharedManager] fetchMessagesForChat:strongSelf.chat];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            strongSelf.messages = [fetched mutableCopy];
+            [strongSelf syncMessagesToSwiftUI];
+            [strongSelf scrollToBottomAnimated:YES];
+            if (completion) { completion(); }
+        });
+    });
 }
 
 // 辅助方法，用于构建消息历史

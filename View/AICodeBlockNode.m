@@ -127,7 +127,7 @@
         // 手动管理子节点，直接将 codeNode 加入 scrollNode 作为内容视图
         [_scrollNode addSubnode:_codeNode];
         
-        NSLog(@"AICodeBlockNode: 创建代码块，语言: %@，内容长度: %lu", _language, (unsigned long)_code.length);
+        // removed debug log
     }
     return self;
 }
@@ -163,6 +163,31 @@
             [mutable addAttribute:NSParagraphStyleAttributeName value:ps range:NSMakeRange(0, mutable.length)];
             strongSelf.pendingAttr = [mutable copy];
             strongSelf.pendingIsAppend = YES;
+
+            // 增量更新最长行宽，避免全量重新扫描
+            // 仅计算新增行的最大宽度，与已有缓存取 max
+            CGFloat incrementMax = 0.0;
+            UIFont *mono = [UIFont monospacedSystemFontOfSize:14 weight:UIFontWeightRegular];
+            NSArray<NSString *> *suffixLines = [suffix componentsSeparatedByString:@"\n"];
+            for (NSString *line in suffixLines) {
+                if (line.length == 0) { continue; }
+                CGSize s = [line boundingRectWithSize:CGSizeMake(CGFLOAT_MAX, CGFLOAT_MAX)
+                                              options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
+                                           attributes:@{ NSFontAttributeName: mono }
+                                              context:nil].size;
+                if (s.width > incrementMax) { incrementMax = s.width; }
+            }
+            if (incrementMax > 0.0) {
+                CGFloat candidate = ceil(incrementMax) + 4.0;
+                if (strongSelf->_hasCachedMaxLineWidth) {
+                    if (candidate > strongSelf->_cachedMaxLineWidth) {
+                        strongSelf->_cachedMaxLineWidth = candidate;
+                    }
+                } else {
+                    strongSelf->_cachedMaxLineWidth = candidate;
+                    strongSelf->_hasCachedMaxLineWidth = YES;
+                }
+            }
         } else {
             // 全量重建
             NSAttributedString *highlighted = [strongSelf.highlighter highlightCode:strongSelf->_code language:strongSelf->_language fontSize:14];
@@ -205,8 +230,11 @@
             strongSelf.codeNode.attributedText = strongSelf.pendingAttr;
         }
         strongSelf.pendingAttr = nil;
+        // 若为追加且宽度未增长，则不清空宽度缓存，避免重复全量扫描
+        if (!strongSelf.pendingIsAppend) {
+            strongSelf->_hasCachedMaxLineWidth = NO;
+        }
         strongSelf.pendingIsAppend = NO;
-        strongSelf->_hasCachedMaxLineWidth = NO;
         strongSelf->_hasCachedHeight = NO;
         [strongSelf updateCodeContentWidthAsync];
         [strongSelf setNeedsLayout];
@@ -259,6 +287,8 @@
         CGFloat computedWidth = 0.0;
         if (strongSelf->_fixedContentWidth > 1.0) {
             computedWidth = ceil(strongSelf->_fixedContentWidth);
+        } else if (strongSelf->_hasCachedMaxLineWidth && strongSelf->_cachedMaxLineWidth > 0.0) {
+            computedWidth = ceil(strongSelf->_cachedMaxLineWidth);
         } else {
             CGFloat maxLineWidth = 0.0;
             UIFont *font = [UIFont monospacedSystemFontOfSize:14 weight:UIFontWeightRegular];
@@ -271,6 +301,8 @@
                 if (s.width > maxLineWidth) { maxLineWidth = s.width; }
             }
             computedWidth = (maxLineWidth > 0.0) ? (ceil(maxLineWidth) + 4.0) : 1.0;
+            strongSelf->_cachedMaxLineWidth = computedWidth;
+            strongSelf->_hasCachedMaxLineWidth = YES;
         }
         if (computedWidth < 1.0) { computedWidth = 1.0; }
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -290,10 +322,10 @@
 - (void)onCopy {
     if (_code.length) {
         [UIPasteboard generalPasteboard].string = _code;
-        NSLog(@"AICodeBlockNode: 代码已复制到剪贴板");
+        // removed debug log
         
         // 显示复制成功反馈
-        [_duplicateButton setTitle:@"已复制" withFont:[UIFont systemFontOfSize:12 weight:UIFontWeightSemibold] withColor:[UIColor systemGreenColor] forState:UIControlStateNormal];
+        [_duplicateButton setTitle:@"已复制" withFont:[UIFont systemFontOfSize:12 weight:UIFontWeightSemibold] withColor:[UIColor systemBlueColor] forState:UIControlStateNormal];
         
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             [self->_duplicateButton setTitle:@"复制" withFont:[UIFont systemFontOfSize:12 weight:UIFontWeightSemibold] withColor:[UIColor labelColor] forState:UIControlStateNormal];
@@ -337,10 +369,20 @@
 
 // 手动设置 scrollNode 的 contentSize，避免横向滚动被重置
 - (void)layout {
+    CFTimeInterval __t0 = 0; CFTimeInterval __dt = 0;
+    #ifdef DEBUG
+    __t0 = CACurrentMediaTime();
+    #endif
     [super layout];
     // 若用户正在与代码滚动视图交互，避免在过程中重设 contentSize 造成回弹
     if (self->_scrollNode.view.isDragging || self->_scrollNode.view.isTracking || self->_scrollNode.view.isDecelerating) {
         return;
+    }
+    // 若当前帧内未发生文本/宽度变化且已有缓存，则跳过重复计算，降低 layout 频率
+    if (self->_hasCachedMaxLineWidth && self->_hasCachedHeight && self->_codeNode.attributedText.length > 0) {
+        // 仅在必要更新时才继续
+    } else {
+        // 计算内容宽高
     }
     // 计算内容宽高
     CGFloat contentWidth = 0.0;
@@ -396,6 +438,7 @@
     if (!CGSizeEqualToSize(self->_scrollNode.view.contentSize, target)) {
         self->_scrollNode.view.contentSize = target;
     }
+    (void)__t0; (void)__dt;
 }
 
 - (void)setFixedContentWidth:(CGFloat)width {

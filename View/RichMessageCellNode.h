@@ -32,6 +32,9 @@ NS_ASSUME_NONNULL_BEGIN
 // 新增：配置每一行渲染的时间间隔（秒）
 - (void)setLineRenderInterval:(NSTimeInterval)lineRenderInterval;
 
+// 新增：配置代码行的渲染间隔（秒）
+- (void)setCodeLineRenderInterval:(NSTimeInterval)value;
+
 // 流式结束的收尾
 - (void)completeStreamingUpdate;
 

@@ -106,27 +106,18 @@ import UIKit
     
     @objc public func updateStreamingResponse(_ content: String) {
         guard !self.messages.isEmpty && !self.messages.last!.isFromUser else { return }
-        
-        // 更新缓存
+
+        // 逐字符更新：每次都把最新内容刷新到最后一条 AI 消息
         streamingBuffer = content
-        
-        // 检查是否达到更新阈值或流式结束
-        let contentGrowth = content.count - lastUIUpdateLength
-        let shouldUpdate = contentGrowth >= Self.kStreamingThreshold || 
-                          !self.isInteracting || 
-                          content.hasSuffix("\n") // 换行时立即更新
-        
-        if shouldUpdate {
-            let lastMessage = self.messages.last!
-            let updatedMessage = ChatMessage(
-                id: lastMessage.id,
-                content: content,
-                isFromUser: false,
-                timestamp: lastMessage.timestamp
-            )
-            self.messages[self.messages.count - 1] = updatedMessage
-            lastUIUpdateLength = content.count
-        }
+        let lastMessage = self.messages.last!
+        let updatedMessage = ChatMessage(
+            id: lastMessage.id,
+            content: content,
+            isFromUser: false,
+            timestamp: lastMessage.timestamp
+        )
+        self.messages[self.messages.count - 1] = updatedMessage
+        lastUIUpdateLength = content.count
     }
     
     @objc public func finishStreamingResponse() {
@@ -229,15 +220,37 @@ public struct MessageRowView: View {
         if cachedAttributedText == nil || 
            contentLength - lastContentLength >= growthThreshold ||
            contentLength < lastContentLength { // 内容减少时（如编辑）
-            cachedAttributedText = createAttributedString(from: message.content)
-            lastContentLength = contentLength
+            let fullText = message.content
+            let isLight = (colorScheme == .light)
+            let isFromUser = message.isFromUser
+            DispatchQueue.global(qos: .userInitiated).async {
+                var built = AttributedString(fullText)
+                built.font = .body
+                built.foregroundColor = isFromUser ? .white : (isLight ? .black : .white)
+                DispatchQueue.main.async {
+                    cachedAttributedText = built
+                    lastContentLength = fullText.count
+                }
+            }
         } else if contentLength > lastContentLength {
             // 增量拼接：仅添加新的文本部分
             let newPart = String(message.content.dropFirst(lastContentLength))
             if let existing = cachedAttributedText {
                 cachedAttributedText = existing + AttributedString(newPart)
             } else {
-                cachedAttributedText = createAttributedString(from: message.content)
+                let fullText = message.content
+                let isLight = (colorScheme == .light)
+                let isFromUser = message.isFromUser
+                DispatchQueue.global(qos: .userInitiated).async {
+                    var built = AttributedString(fullText)
+                    built.font = .body
+                    built.foregroundColor = isFromUser ? .white : (isLight ? .black : .white)
+                    DispatchQueue.main.async {
+                        cachedAttributedText = built
+                        lastContentLength = fullText.count
+                    }
+                }
+                return
             }
             lastContentLength = contentLength
         }
@@ -303,7 +316,7 @@ public struct MessageRowView: View {
     }
 }
 
-// 优化的聊天列表视图，移除自动滚动功能
+// 优化的聊天列表视图，支持智能自动滚动
 public struct ChatListView: View {
     @ObservedObject var viewModel: ChatViewModel
     
@@ -314,6 +327,14 @@ public struct ChatListView: View {
     
     public var body: some View {
         ScrollViewReader { proxy in
+            // 简单节流：合并 100ms 内的多次滚动请求
+            let throttleScroll: () -> Void = {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        proxy.scrollTo("bottom", anchor: .bottom)
+                    }
+                }
+            }
             GeometryReader { geometry in
                 ScrollView {
                     LazyVStack(spacing: 8) {
@@ -338,6 +359,12 @@ public struct ChatListView: View {
                     }
                     .padding(.vertical, 8)
                 }
+            }
+            // 当消息变化或思考状态变化时，尝试滚动到底部
+            .onChange(of: viewModel.messages.count) { _ in throttleScroll() }
+            .onChange(of: viewModel.isThinking) { _ in throttleScroll() }
+            .onReceive(NotificationCenter.default.publisher(for: Notification.Name("SwiftChatScrollToBottom"))) { _ in
+                throttleScroll()
             }
         }
         .background(Color(UIColor.systemBackground))
@@ -391,12 +418,11 @@ public struct ChatListView: View {
     
     @objc public func scrollToBottomWithAnimated(_ animated: Bool) {
         Task { @MainActor in
-            // 通过 SwiftUI 的 .onChange 触发滚动
+            // 通过通知让 ChatListView 使用 ScrollViewReader 滚动
             if animated {
-                try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 seconds
-            } else {
-                // 非动画方式：无需额外处理
+                try? await Task.sleep(nanoseconds: 80_000_000)
             }
+            NotificationCenter.default.post(name: Notification.Name("SwiftChatScrollToBottom"), object: nil)
         }
     }
 }

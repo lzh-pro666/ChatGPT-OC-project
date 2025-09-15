@@ -7,8 +7,6 @@
 
 #import "MediaPickerManager.h"
 
-
-
 // 1. 在类扩展中，让 Manager 自己遵守所有相关的协议
 @interface MediaPickerManager () <PHPickerViewControllerDelegate, UIImagePickerControllerDelegate, UINavigationControllerDelegate, UIDocumentPickerDelegate>
 
@@ -129,7 +127,7 @@
     UIImage *image = info[UIImagePickerControllerOriginalImage];
     if (image) {
         if ([self.delegate respondsToSelector:@selector(mediaPicker:didPickImages:)]) {
-            // 将单� 图片放入数组中回调
+            // 将单张图片放入数组中回调
             [self.delegate mediaPicker:self didPickImages:@[image]];
         }
     }

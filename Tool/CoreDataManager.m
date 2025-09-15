@@ -28,7 +28,6 @@
     // 调用 loadPersistentStoresWithCompletionHandler 方法加载持久化存储
     [_persistentContainer loadPersistentStoresWithCompletionHandler:^(NSPersistentStoreDescription *storeDescription, NSError *error) {
         if (error != nil) {
-            NSLog(@"Unresolved error %@, %@", error, error.userInfo);
             abort();
         }
     }];
@@ -46,7 +45,6 @@
     NSManagedObjectContext *context = self.managedObjectContext;
     NSError *error = nil;
     if ([context hasChanges] && ![context save:&error]) {
-        NSLog(@"Unresolved error %@, %@", error, error.userInfo);
         abort();
     }
 }
@@ -90,7 +88,6 @@
     NSError *error = nil;
     NSArray *results = [self.managedObjectContext executeFetchRequest:request error:&error];
     if (error) {
-        NSLog(@"Error fetching chats: %@", error);
         return @[];
     }
     
@@ -109,7 +106,6 @@
     NSError *error = nil;
     NSArray *results = [self.managedObjectContext executeFetchRequest:request error:&error];
     if (error) {
-        NSLog(@"Error fetching messages: %@", error);
         return @[];
     }
     
@@ -130,7 +126,7 @@
         [self addMessageToChat:chat1 content:@"可以帮我解释一下iOS的导航模式吗？" isFromUser:YES];
         [self addMessageToChat:chat1 content:@"iOS有两种主要的导航模式：\n\n1. 层级导航（Hierarchical）\n- 使用UINavigationController\n- 适合展示层级内容\n- 支持返回手势\n\n2. 平铺导航（Flat）\n- 使用UITabBarController\n- 适合同级内容切换\n- 底部标签栏导航\n\n3. 模态导航（Modal）\n- 临时打断当前任务\n- 完整的上下文切换\n- 支持多种展示方式" isFromUser:NO];
         
-        NSLog(@"已创建初始聊天数据");
+        
     }
 }
 

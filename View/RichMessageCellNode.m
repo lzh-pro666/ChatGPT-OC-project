@@ -1,21 +1,8 @@
-//
-//  RichMessageCellNode.m
-//  ChatGPT-OC-Clone
-//
-//  Created by AI Assistant
-//
-
 #import "RichMessageCellNode.h"
-#import "CodeBlockView.h"
-#import "ResponseParsingTask.h"
 #import "ParserResult.h"
 #import "AIMarkdownParser.h"
 #import "AICodeBlockNode.h"
-#import <CoreText/CoreText.h>
-#import <AsyncDisplayKit/ASButtonNode.h>
 #import <QuartzCore/QuartzCore.h>
-
-// 移除多余日志：不再使用宏禁用，直接删除调用
 
 // MARK: - 富文本消息节点
 @interface RichMessageCellNode ()
@@ -24,7 +11,6 @@
 @property (nonatomic, assign) BOOL isFromUser;
 @property (nonatomic, strong) NSArray<ParserResult *> *parsedResults;
 @property (nonatomic, copy) NSString *currentMessage;
-@property (nonatomic, strong) ResponseParsingTask *parsingTask;
 @property (nonatomic, assign) NSInteger lastParsedLength;
 @property (nonatomic, copy) NSString *lastParsedText;
 @property (nonatomic, strong) NSArray<ASDisplayNode *> *renderNodes;
@@ -35,9 +21,10 @@
 // 新增：附件缩略图尺寸与间距（便于统一调节）
 @property (nonatomic, assign) CGFloat attachmentImageSize;
 @property (nonatomic, assign) CGFloat attachmentSpacing;
+// 动态：根据行内图片张数与可用宽度计算得出，用于本次布局
+@property (nonatomic, assign) CGFloat currentAttachmentThumbSize;
 // 恢复AIMarkdownParser以保持富文本效果
 @property (nonatomic, strong) AIMarkdownParser *markdownParser;
-@property (nonatomic, strong) NSArray<AIMarkdownBlock *> *markdownBlocks;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *layoutCache;
 @property (nonatomic, assign) BOOL isLayoutStable;
 // 高度缓存：key 由文本hash和宽度组成
@@ -115,18 +102,15 @@
         
         // 初始化解析器
         _markdownParser = [[AIMarkdownParser alloc] init];
-        _markdownBlocks = @[];
         
-        // 初始化解析任务
-        _parsingTask = [[ResponseParsingTask alloc] init];
         _lastParsedLength = 0;
         
         // 强制首次解析消息内容
         [self parseMessage:message];
         
-        // 新增：逐行渲染默认间隔与计数（统一 0.333s，约 20 帧@60Hz）
-        _lineRenderInterval = 0.333;
-        _codeLineRenderInterval = 0.333;
+        // 新增：逐行渲染默认间隔与计数（统一 0.41675s）
+        _lineRenderInterval = 0.41675;
+        _codeLineRenderInterval = 0.41675;
         _baseLineRenderInterval = _lineRenderInterval;
         _baseCodeLineRenderInterval = _codeLineRenderInterval;
         _processedBlockCounter = 0;
@@ -188,12 +172,12 @@
 
 - (ASLayoutSpec *)layoutSpecThatFits:(ASSizeRange)constrainedSize {
     // 若无任何内容与附件且消息为空，返回零高度布局以避免空白气泡
+    CFTimeInterval __t0 = 0; CFTimeInterval __dt = 0;
+
     if ((self.renderNodes.count == 0) && (self.attachmentsData.count == 0) && ((self.currentMessage ?: @"").length == 0)) {
         return [ASLayoutSpec new];
     }
     // 使用解析生成的内容节点进行布局
-    // 移除未使用的 backgroundColor 变量
-
     // 固定 + 单行自适应：默认固定 capWidth；若无附件且仅一行文本则按文本自然宽度收窄
     CGFloat devicePreferred = [self preferredTextMaxWidth];
     CGFloat capWidth = floor(MIN(constrainedSize.max.width, devicePreferred));
@@ -215,6 +199,28 @@
             }
         }
     }
+    // 如果存在附件：按“单行水平排布”的宽度需求扩张气泡（最多扩到 constrainedSize.max.width）
+    // 同时若仍超出可用宽度，则按比例缩小每个缩略图尺寸以适配单行。
+    self.currentAttachmentThumbSize = self.attachmentImageSize;
+    if (self.attachmentsData.count > 0) {
+        NSInteger count = (NSInteger)self.attachmentsData.count;
+        CGFloat desiredRowWidth = (CGFloat)count * self.attachmentImageSize + (CGFloat)MAX(0, count - 1) * self.attachmentSpacing;
+        // 允许突破 0.75 屏的 cap，将气泡扩至本 Cell 最大宽度（由父层提供）
+        CGFloat allowedContentMax = constrainedSize.max.width;
+        // 将内容宽度扩张到图片单行所需与文本所需的较大值，但不超过 allowedContentMax
+        finalWidth = MIN(allowedContentMax, MAX(finalWidth, desiredRowWidth));
+        // 若单行仍放不下，则按行整体等比缩小每张缩略图尺寸
+        if (desiredRowWidth > finalWidth && count > 0) {
+            CGFloat totalSpacing = (CGFloat)MAX(0, count - 1) * self.attachmentSpacing;
+            CGFloat availableForThumbs = MAX(finalWidth - totalSpacing, 1.0);
+            CGFloat scaled = floor(availableForThumbs / (CGFloat)count);
+            // 给个下限，避免过小导致点击困难
+            self.currentAttachmentThumbSize = MAX(44.0, scaled);
+        } else {
+            self.currentAttachmentThumbSize = self.attachmentImageSize;
+        }
+    }
+
     self.contentNode.style.width = ASDimensionMake(finalWidth);
     self.contentNode.style.maxWidth = ASDimensionMake(finalWidth);
     self.contentNode.style.minWidth = ASDimensionMake(finalWidth);
@@ -254,15 +260,15 @@
                 [children addObject:row];
             }
         }
-        // 关键修复：确保带有附件的消息也能正确显示文本内容
-        if (children.count == 0 && (strongSelf.currentMessage.length > 0) && !strongSelf.isStreamingMode) {
+        // 关键修复：确保带有附件的消息也能正确显示文本内容（即使已添加附件行）
+        if ((renderChildren.count == 0) && (strongSelf.currentMessage.length > 0) && !strongSelf.isStreamingMode) {
             ASTextNode *placeholderNode = [[ASTextNode alloc] init];
             placeholderNode.attributedText = [strongSelf attributedStringForText:(strongSelf.currentMessage ?: @"")];
             placeholderNode.maximumNumberOfLines = 0;
-            // 关键修复：确保占位符节点可以显示完整文本
             placeholderNode.style.flexGrow = 1.0;
             placeholderNode.style.flexShrink = 1.0;
-            [children addObject:placeholderNode];
+            // 文本应出现在附件行之前
+            [children insertObject:placeholderNode atIndex:0];
         }
         
         // 关键修复：如果只有附件没有文本内容，确保消息仍然可见
@@ -299,7 +305,9 @@
                                                                           children:@[backgroundSpec]];
 
     // 与 cell 边缘的外边距
-    return [ASInsetLayoutSpec insetLayoutSpecWithInsets:UIEdgeInsetsMake(5, 12, 5, 12) child:stackSpec];
+    ASInsetLayoutSpec *finalSpec = [ASInsetLayoutSpec insetLayoutSpecWithInsets:UIEdgeInsetsMake(5, 12, 5, 12) child:stackSpec];
+    (void)__t0; (void)__dt; (void)finalWidth;
+    return finalSpec;
 }
 - (ASDisplayNode *)createAttachmentThumbNode:(id)attachment {
     if ([attachment isKindOfClass:[UIImage class]]) {
@@ -308,8 +316,9 @@
         n.contentMode = UIViewContentModeScaleAspectFill;
         n.clipsToBounds = YES;
         n.cornerRadius = 8.0;
-        n.style.width = ASDimensionMake(self.attachmentImageSize);
-        n.style.height = ASDimensionMake(self.attachmentImageSize);
+        CGFloat side = (self.currentAttachmentThumbSize > 0.0 ? self.currentAttachmentThumbSize : self.attachmentImageSize);
+        n.style.width = ASDimensionMake(side);
+        n.style.height = ASDimensionMake(side);
         // 允许点击
         [(ASControlNode *)n addTarget:self action:@selector(thumbTapped:) forControlEvents:ASControlNodeEventTouchUpInside];
         // 标记为本地图片
@@ -323,8 +332,9 @@
         n.cornerRadius = 8.0;
         n.placeholderFadeDuration = 0.1;
         n.placeholderColor = [UIColor systemGray5Color];
-        n.style.width = ASDimensionMake(self.attachmentImageSize);
-        n.style.height = ASDimensionMake(self.attachmentImageSize);
+        CGFloat side = (self.currentAttachmentThumbSize > 0.0 ? self.currentAttachmentThumbSize : self.attachmentImageSize);
+        n.style.width = ASDimensionMake(side);
+        n.style.height = ASDimensionMake(side);
         // 允许点击
         [(ASControlNode *)n addTarget:self action:@selector(thumbTapped:) forControlEvents:ASControlNodeEventTouchUpInside];
         // 存储URL字符串
@@ -377,8 +387,6 @@
     });
 }
 
-// 已移除：冗余 getter currentMessage（使用默认合成访问器）
-
 - (void)updateMessageText:(NSString *)newMessage {
     if (self.isUpdating) return;
     
@@ -400,8 +408,6 @@
     }
     
     self.currentMessage = [newMessage copy];
-    
-
     
     // 关键改进：在流式模式下，直接更新文本内容，不启动动画
     if (self.isStreamingMode) {
@@ -591,12 +597,6 @@
     });
 }
 
-
-
-
-
-
-
 - (NSAttributedString *)attributedStringForText:(NSString *)text {
     NSMutableParagraphStyle *paragraphStyle = [[NSMutableParagraphStyle alloc] init];
     paragraphStyle.lineSpacing = 5; // 与 MessageCellNode 一致
@@ -616,8 +616,6 @@
     
     return [attributedString copy];
 }
-
-
 
 // 统一的样式应用方法
 - (void)applyMarkdownStyles:(NSMutableAttributedString *)attributedString {
@@ -1036,7 +1034,6 @@
     return NO;
 }
 
-
 // 新增：流式更新完成时的处理
 - (void)completeStreamingUpdate {
     if (self.isStreamingMode) {
@@ -1055,8 +1052,6 @@
         // 退出流式模式
         self.isStreamingMode = NO;
         
-
-        
         // 最终布局更新（无动画）
         dispatch_async(dispatch_get_main_queue(), ^{
             [UIView performWithoutAnimation:^{
@@ -1067,7 +1062,11 @@
     }
 }
 
-
+// 新增：在控制器通知“流式结束”时确保触发最终一次行渲染推进
+- (void)ensureFinalFlushAfterStreamDone {
+    if (!self.isStreamingMode) { return; }
+    [self completeStreamingUpdate];
+}
 
 // 缓存清理方法
 - (void)clearCache {
@@ -1112,9 +1111,6 @@
 }
 
 // MARK: - 按行更新优化方法
-
-
-
 - (void)updateTextContentDirectly:(NSString *)newMessage {
     if (!newMessage || newMessage.length == 0) {
         return;
@@ -1138,9 +1134,9 @@
 // 新增：恢复流式更新动画
 - (void)resumeStreamingAnimation {
     self.isSchedulingPaused = NO;
-    // 恢复后维持统一节奏（0.333s），避免交互导致速率改变
-    self.lineRenderInterval = 0.333;
-    self.codeLineRenderInterval = 0.333;
+    // 恢复后维持统一节奏（0.41675s），避免交互导致速率改变
+    self.lineRenderInterval = 0.41675;
+    self.codeLineRenderInterval = 0.41675;
     if (self.currentBlockLineTasks.count > 0 || self.pendingSemanticBlockQueue.count > 0) {
         [self scheduleNextLineTask];
     }
@@ -1205,9 +1201,6 @@
     CGFloat screenWidth = [UIScreen mainScreen].bounds.size.width;
     return floor(screenWidth * 0.75);
 }
-
-// 新增：按固定宽度切分纯文本为可视行（指定字体）
-// 已移除：按固定宽度切分纯文本为可视行（未使用）
 
 // 新增：为单个语义块文本生成逐行任务（后台解析与计算行）
 - (void)buildLineTasksForBlockText:(NSString *)blockText completion:(void (^)(NSArray<NSDictionary *> *tasks))completion {
@@ -1296,7 +1289,6 @@
         // 记录当前块总行数用于日志
         strongSelf.currentBlockTotalLines = tasks.count;
         
-        
         if (completion) completion([tasks copy]);
     });
 }
@@ -1324,13 +1316,10 @@
         return;
     }
     
-    // 日志：开始处理一个新语义块
     self.processedBlockCounter += 1;
     self.currentBlockIndex = self.processedBlockCounter;
     self.currentBlockRenderedLineIndex = 0;
     self.currentBlockTotalLines = 0;
-    
-    NSString *preview = (nextBlock.length > 60) ? [[nextBlock substringToIndex:60] stringByAppendingString:@"…"] : nextBlock;
     
     
     __weak typeof(self) weakSelf = self;
@@ -1351,8 +1340,6 @@
             strongSelf.activeCodeNode = nil;
             strongSelf.activeAccumulatedCode = @"";
             strongSelf.isProcessingSemanticBlock = NO;
-            
-            
             
             [strongSelf scheduleNextLineTask];
         };
@@ -1420,14 +1407,7 @@
     [self.currentBlockLineTasks removeObjectAtIndex:0];
     NSString *type = task[@"type"];
     
-    // 日志：行序号更新
     self.currentBlockRenderedLineIndex += 1;
-    NSInteger blockIdx = self.currentBlockIndex;
-    NSInteger lineIdx = self.currentBlockRenderedLineIndex;
-    NSInteger total = self.currentBlockTotalLines;
-    NSString *textPreviewForLog = @"";
-    
-    
     
     if ([type isEqualToString:@"text_line"]) {
         NSAttributedString *line = task[@"attr"];
@@ -1455,8 +1435,6 @@
             [mutable addObject:textNode];
             self.renderNodes = [mutable copy];
             
-            textPreviewForLog = line.string ?: @"";
-            
         } else {
             
             // 尝试使用备用文本创建
@@ -1476,17 +1454,12 @@
                 NSMutableArray *mutable = self.renderNodes ? [self.renderNodes mutableCopy] : [NSMutableArray array];
                 [mutable addObject:textNode];
                 self.renderNodes = [mutable copy];
-                
-                textPreviewForLog = fallbackText;
-                
             }
         }
     } else if ([type isEqualToString:@"code_line"]) {
         NSString *lang = task[@"language"] ?: @"plaintext";
         NSString *lineText = task[@"line"] ?: @"";
         BOOL isStart = [task[@"start"] boolValue];
-        
-        
         
         if (isStart || !self.activeCodeNode) {
             self.activeCodeNode = [[AICodeBlockNode alloc] initWithCode:@"" language:lang isFromUser:self.isFromUser];
@@ -1517,24 +1490,13 @@
             }
             self.activeAccumulatedCode = self.activeAccumulatedCode.length > 0 ? [self.activeAccumulatedCode stringByAppendingFormat:@"\n%@", lineText] : lineText;
             [self.activeCodeNode updateCodeText:self.activeAccumulatedCode];
-            textPreviewForLog = lineText;
-            
             
         } else {
             
         }
     }
-    
-    // 截断日志文本，避免过长
-    NSString *preview = textPreviewForLog.length > 80 ? [[textPreviewForLog substringToIndex:80] stringByAppendingString:@"…"] : textPreviewForLog;
-    
-    
     // 使用节流布局更新，减少主线程压力并提升手势响应
     [self performDelayedLayoutUpdate];
-    
-    // 调试：检查渲染节点状态
-    [self debugRenderNodesState];
-    
     // 合并逐行通知：只标记待通知，在下一帧发送一次
     [self scheduleBatchedLineNotification];
     

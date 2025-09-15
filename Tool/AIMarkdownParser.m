@@ -6,6 +6,7 @@
 //
 
 #import "AIMarkdownParser.h"
+#import "ChatGPT_OC_Clone-Swift.h"
 
 @implementation AIMarkdownBlock
 
@@ -35,6 +36,47 @@
 - (NSArray<AIMarkdownBlock *> *)parse:(NSString *)raw {
     if (!raw || raw.length == 0) {
         return @[];
+    }
+    
+    // 优先使用 Down(cmark) 解析（通过 Swift 桥），失败时回退到旧实现
+    @try {
+        NSArray<NSDictionary *> *downBlocks = [[MarkdownParserBridge shared] parseToBlocks:raw];
+        if ([downBlocks isKindOfClass:[NSArray class]] && downBlocks.count > 0) {
+            NSMutableArray<AIMarkdownBlock *> *out = [NSMutableArray arrayWithCapacity:downBlocks.count];
+            for (NSDictionary *obj in downBlocks) {
+                if (![obj isKindOfClass:[NSDictionary class]]) { continue; }
+                NSString *type = obj[@"type"];
+                AIMarkdownBlock *b = [AIMarkdownBlock new];
+                if ([type isEqualToString:@"heading"]) {
+                    b.type = AIMarkdownBlockTypeHeading;
+                    b.headingLevel = [obj[@"level"] integerValue];
+                    b.text = obj[@"text"] ?: @"";
+                } else if ([type isEqualToString:@"paragraph"]) {
+                    b.type = AIMarkdownBlockTypeParagraph;
+                    b.text = obj[@"text"] ?: @"";
+                } else if ([type isEqualToString:@"code"]) {
+                    b.type = AIMarkdownBlockTypeCodeBlock;
+                    b.language = obj[@"language"] ?: @"";
+                    b.code = obj[@"code"] ?: @"";
+                } else if ([type isEqualToString:@"hr"]) {
+                    b.type = AIMarkdownBlockTypeHorizontalRule;
+                } else if ([type isEqualToString:@"quote"]) {
+                    b.type = AIMarkdownBlockTypeQuote;
+                    b.text = obj[@"text"] ?: @"";
+                } else if ([type isEqualToString:@"listItem"]) {
+                    b.type = AIMarkdownBlockTypeListItem;
+                    b.text = obj[@"text"] ?: @"";
+                } else {
+                    b.type = AIMarkdownBlockTypeParagraph;
+                    b.text = obj[@"text"] ?: @"";
+                }
+                [out addObject:b];
+            }
+            if (out.count > 0) {
+                return out; }
+        }
+    } @catch (__unused NSException *ex) {
+        // fall back
     }
     
     NSMutableArray *blocks = [NSMutableArray array];

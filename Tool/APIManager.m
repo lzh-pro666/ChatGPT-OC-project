@@ -1,6 +1,5 @@
 #import "APIManager.h"
 
-// 默认 API endpoint（仅作为缺省值，不在运行时修改全局变量）
 static NSString * kDefaultAPIEndpoint = @"https://xiaoai.plus/v1/chat/completions";
 static const NSTimeInterval kUIThrottleIntervalSeconds = 0.016; // ~60fps
 
@@ -56,6 +55,11 @@ static const NSTimeInterval kUIThrottleIntervalSeconds = 0.016; // ~60fps
     if (self = [super init]) {
         // 配置会话使用代理，并在主队列上回调
         NSURLSessionConfiguration *config = [NSURLSessionConfiguration defaultSessionConfiguration];
+        // 超时与联网等待配置
+        config.timeoutIntervalForRequest = 10.0;
+        if ([config respondsToSelector:@selector(setWaitsForConnectivity:)]) {
+            config.waitsForConnectivity = YES;
+        }
         // 创建一个专用于网络回调的后台队列
         NSOperationQueue *delegateQueue = [[NSOperationQueue alloc] init];
         delegateQueue.maxConcurrentOperationCount = 1; // 保证任务按顺序执行
@@ -127,6 +131,62 @@ static const NSTimeInterval kUIThrottleIntervalSeconds = 0.016; // ~60fps
     });
 }
 
+#pragma mark - Retry Helpers
+
+// 判断是否需要在错误/响应场景下重试（最多 maxAttempts 次）
+- (BOOL)_shouldRetryForResponse:(NSURLResponse *)response
+                           error:(NSError *)error
+                         attempt:(NSInteger)attempt
+                      maxAttempts:(NSInteger)maxAttempts {
+    if (attempt >= maxAttempts) { return NO; }
+    // 网络错误场景：可重试
+    if (error && [error.domain isEqualToString:NSURLErrorDomain]) {
+        switch (error.code) {
+            case NSURLErrorTimedOut:
+            case NSURLErrorNetworkConnectionLost:
+            case NSURLErrorNotConnectedToInternet:
+            case NSURLErrorCannotFindHost:
+            case NSURLErrorCannotConnectToHost:
+            case NSURLErrorDNSLookupFailed:
+                return YES;
+            default:
+                break;
+        }
+    }
+    // HTTP 状态码：429 / 5xx 可重试
+    NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
+    if ([http isKindOfClass:[NSHTTPURLResponse class]]) {
+        NSInteger code = http.statusCode;
+        if (code == 429 || (code >= 500 && code <= 599)) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+// 带指数退避的可控重试（用于非流式请求）
+- (void)_performRequest:(NSMutableURLRequest *)request
+                attempt:(NSInteger)attempt
+            maxAttempts:(NSInteger)maxAttempts
+             completion:(void (^)(NSData * _Nullable data, NSURLResponse * _Nullable response, NSError * _Nullable error))completion {
+    __weak typeof(self) weakSelf = self;
+    NSURLSessionDataTask *task = [self.session dataTaskWithRequest:request
+                                                 completionHandler:^(NSData * _Nullable data, NSURLResponse * _Nullable response, NSError * _Nullable error) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) { if (completion) completion(data, response, error); return; }
+
+        if ([strongSelf _shouldRetryForResponse:response error:error attempt:attempt maxAttempts:maxAttempts]) {
+            NSTimeInterval delay = pow(2, (attempt - 1)) * 0.5; // 0.5s,1s,2s
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                [strongSelf _performRequest:request attempt:(attempt + 1) maxAttempts:maxAttempts completion:completion];
+            });
+            return;
+        }
+        if (completion) { completion(data, response, error); }
+    }];
+    [task resume];
+}
+
 // 取消任务的节流定时器
 - (void)cancelThrottleTimerForTaskIdentifier:(NSNumber *)taskIdentifier {
     dispatch_sync(self.stateAccessQueue, ^{
@@ -164,7 +224,8 @@ static const NSTimeInterval kUIThrottleIntervalSeconds = 0.016; // ~60fps
     NSData *data = [NSJSONSerialization dataWithJSONObject:body options:0 error:nil];
     [req setHTTPBody:data];
 
-    NSURLSessionDataTask *task = [self.session dataTaskWithRequest:req completionHandler:^(NSData * _Nullable d, NSURLResponse * _Nullable r, NSError * _Nullable e) {
+    // 使用带重试的通用请求
+    [self _performRequest:req attempt:1 maxAttempts:3 completion:^(NSData * _Nullable d, NSURLResponse * _Nullable r, NSError * _Nullable e) {
         if (e) { dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion(nil, e); }); return; }
         NSDictionary *obj = d ? [NSJSONSerialization JSONObjectWithData:d options:0 error:nil] : nil;
         NSString *label = nil;
@@ -181,7 +242,6 @@ static const NSTimeInterval kUIThrottleIntervalSeconds = 0.016; // ~60fps
         }
         dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion(label, nil); });
     }];
-    [task resume];
 }
 
 #pragma mark - Image Generation (图片生成)
@@ -194,6 +254,8 @@ static const NSTimeInterval kUIThrottleIntervalSeconds = 0.016; // ~60fps
         if (completion) dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, [NSError errorWithDomain:@"com.yourapp.api" code:401 userInfo:@{NSLocalizedDescriptionKey:@"API Key 未设置"}]); });
         return;
     }
+    // 为避免误用全局 Key 调用图片接口，建议使用按调用级别方法传入专用 DashScope Key
+    NSLog(@"[ImageGen][Warning] Using global API key. Prefer per-call API variant to avoid overriding defaults.");
 
     // 新接口与格式
     NSString *genEndpoint = @"https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
@@ -214,22 +276,17 @@ static const NSTimeInterval kUIThrottleIntervalSeconds = 0.016; // ~60fps
     // 调试日志
     NSLog(@"[ImageGen][Request] endpoint=%@ body=%@", genEndpoint, body);
 
-    NSURLSessionDataTask *task = [self.session dataTaskWithRequest:req completionHandler:^(NSData * _Nullable d, NSURLResponse * _Nullable r, NSError * _Nullable e) {
+    [self _performRequest:req attempt:1 maxAttempts:3 completion:^(NSData * _Nullable d, NSURLResponse * _Nullable r, NSError * _Nullable e) {
         if (e) { dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion(nil, e); }); return; }
         NSDictionary *obj = d ? [NSJSONSerialization JSONObjectWithData:d options:0 error:nil] : nil;
         NSLog(@"[ImageGen][Response] %@", obj);
-        // 错误结构：{"code":"InvalidParameter","message":"..."}
         if ([obj isKindOfClass:[NSDictionary class]] && obj[@"code"]) {
             NSString *code = obj[@"code"] ?: @"Unknown";
             NSString *msg = obj[@"message"] ?: @"Unknown error";
             NSError *apiErr = [NSError errorWithDomain:@"com.yourapp.api" code:422 userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"[%@] %@", code, msg]}];
-            dispatch_async(dispatch_get_main_queue(), ^{
-                if (completion) completion(nil, apiErr);
-            });
+            dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion(nil, apiErr); });
             return;
         }
-
-        // 成功结构：output.choices[0].message.content[0].image
         NSMutableArray<NSURL *> *urls = [NSMutableArray array];
         if ([obj isKindOfClass:[NSDictionary class]]) {
             NSDictionary *output = obj[@"output"];
@@ -254,11 +311,74 @@ static const NSTimeInterval kUIThrottleIntervalSeconds = 0.016; // ~60fps
             dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion(nil, pe); });
             return;
         }
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (completion) completion([urls copy], nil);
-        });
+        dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion([urls copy], nil); });
     }];
-    [task resume];
+}
+
+- (void)generateImageWithPrompt:(NSString *)prompt
+                   baseImageURL:(NSString *)baseImageURL
+                         apiKey:(NSString *)apiKey
+                      completion:(ImageGenerationBlock)completion {
+    NSString *apiKeySnapshot = apiKey ?: @"";
+    if (apiKeySnapshot.length == 0) {
+        if (completion) dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, [NSError errorWithDomain:@"com.yourapp.api" code:401 userInfo:@{NSLocalizedDescriptionKey:@"API Key 未设置"}]); });
+        return;
+    }
+
+    NSString *genEndpoint = @"https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
+    NSDictionary *messageContent = @{ @"role": @"user",
+                                      @"content": @[ @{ @"image": (baseImageURL ?: @"") },
+                                                      @{ @"text": (prompt ?: @"") } ] };
+    NSDictionary *body = @{ @"model": @"qwen-image-edit",
+                            @"input": @{ @"messages": @[ messageContent ] },
+                            @"parameters": @{ @"negative_prompt": @"",
+                                               @"watermark": @NO } };
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:genEndpoint]];
+    [req setHTTPMethod:@"POST"];
+    [req setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    [req setValue:[NSString stringWithFormat:@"Bearer %@", apiKeySnapshot] forHTTPHeaderField:@"Authorization"];
+    NSData *data = [NSJSONSerialization dataWithJSONObject:body options:0 error:nil];
+    [req setHTTPBody:data];
+
+    NSLog(@"[ImageGen/PerCall][Request] endpoint=%@ body=%@", genEndpoint, body);
+
+    [self _performRequest:req attempt:1 maxAttempts:3 completion:^(NSData * _Nullable d, NSURLResponse * _Nullable r, NSError * _Nullable e) {
+        if (e) { dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion(nil, e); }); return; }
+        NSDictionary *obj = d ? [NSJSONSerialization JSONObjectWithData:d options:0 error:nil] : nil;
+        NSLog(@"[ImageGen/PerCall][Response] %@", obj);
+        if ([obj isKindOfClass:[NSDictionary class]] && obj[@"code"]) {
+            NSString *code = obj[@"code"] ?: @"Unknown";
+            NSString *msg = obj[@"message"] ?: @"Unknown error";
+            NSError *apiErr = [NSError errorWithDomain:@"com.yourapp.api" code:422 userInfo:@{NSLocalizedDescriptionKey:[NSString stringWithFormat:@"[%@] %@", code, msg]}];
+            dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion(nil, apiErr); });
+            return;
+        }
+        NSMutableArray<NSURL *> *urls = [NSMutableArray array];
+        if ([obj isKindOfClass:[NSDictionary class]]) {
+            NSDictionary *output = obj[@"output"];
+            NSArray *choices = [output isKindOfClass:[NSDictionary class]] ? output[@"choices"] : nil;
+            if ([choices isKindOfClass:[NSArray class]] && choices.count > 0) {
+                NSDictionary *choice0 = choices.firstObject;
+                NSDictionary *message = [choice0 isKindOfClass:[NSDictionary class]] ? choice0[@"message"] : nil;
+                NSArray *contents = [message isKindOfClass:[NSDictionary class]] ? message[@"content"] : nil;
+                if ([contents isKindOfClass:[NSArray class]] && contents.count > 0) {
+                    for (NSDictionary *c in contents) {
+                        NSString *img = c[@"image"];
+                        if ([img isKindOfClass:[NSString class]] && img.length > 0) {
+                            NSURL *u = [NSURL URLWithString:img];
+                            if (u) { [urls addObject:u]; }
+                        }
+                    }
+                }
+            }
+        }
+        if (urls.count == 0) {
+            NSError *pe = [NSError errorWithDomain:@"com.yourapp.api" code:500 userInfo:@{NSLocalizedDescriptionKey:@"未从响应中解析到图片URL"}];
+            dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion(nil, pe); });
+            return;
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{ if (completion) completion([urls copy], nil); });
+    }];
 }
 
 - (NSURLSessionDataTask *)streamingChatCompletionWithMessages:(NSArray *)messages 
@@ -306,6 +426,11 @@ static const NSTimeInterval kUIThrottleIntervalSeconds = 0.016; // ~60fps
     }
     
     [request setHTTPBody:jsonData];
+    // SSE 与超时设置（不影响全局会话）
+    [request setValue:@"text/event-stream" forHTTPHeaderField:@"Accept"];
+    [request setTimeoutInterval:60.0];
+    // 调试：记录本次流式调用的端点与模型（不打印密钥）
+    NSLog(@"[Chat][Streaming] baseURL=%@ model=%@ (global)", [self currentBaseURL], (self.currentModelName ?: @""));
     
     // 创建数据任务
     NSURLSessionDataTask *task = [self.session dataTaskWithRequest:request];
@@ -344,7 +469,7 @@ static const NSTimeInterval kUIThrottleIntervalSeconds = 0.016; // ~60fps
 /**
  @brief 发起一个流式的聊天机器人请求，可选支持多模态（图文混合）。
  @param messages 对话历史记录数组。
- @param images 可选的图片数组。如果为 nil 或空，则为纯文�请求。
+ @param images 可选的图片数组。如果为 nil 或空，则为纯文请求。
  @param callback 流式响应的回调 block。
  @return 用于控制任务的 NSURLSessionDataTask 对象。
  */
@@ -443,6 +568,11 @@ static const NSTimeInterval kUIThrottleIntervalSeconds = 0.016; // ~60fps
     }
     
     [request setHTTPBody:jsonData];
+    // SSE 与超时设置（不影响全局会话）
+    [request setValue:@"text/event-stream" forHTTPHeaderField:@"Accept"];
+    [request setTimeoutInterval:60.0];
+    // 调试：记录本次流式调用（含图片与否）
+    NSLog(@"[Chat][Streaming][Images] baseURL=%@ model=%@ mode=%@", [self currentBaseURL], (self.currentModelName ?: @""), ((images && images.count > 0) ? @"multimodal" : @"text"));
     
     // 6. 创建数据任务
     NSURLSessionDataTask *task = [self.session dataTaskWithRequest:request];
@@ -475,6 +605,67 @@ static const NSTimeInterval kUIThrottleIntervalSeconds = 0.016; // ~60fps
         }
         return nil;
     }
+}
+
+// 按调用级别指定 baseURL/apiKey/model 的流式请求（不污染全局设置）
+- (NSURLSessionDataTask *)streamingChatCompletionWithMessages:(NSArray *)messages
+                                                        model:(NSString *)model
+                                                      baseURL:(NSString *)baseURLString
+                                                       apiKey:(NSString *)apiKey
+                                               streamCallback:(StreamingResponseBlock)callback {
+    NSString *apiKeySnapshot = apiKey ?: @"";
+    if (apiKeySnapshot.length == 0) {
+        NSError *error = [NSError errorWithDomain:@"com.yourapp.api"
+                                             code:401
+                                         userInfo:@{NSLocalizedDescriptionKey: @"API Key 未设置"}];
+        if (callback) {
+            dispatch_async(dispatch_get_main_queue(), ^{ callback(nil, YES, error); });
+        }
+        return nil;
+    }
+
+    NSDictionary *requestBody = @{ @"model": (model ?: @""),
+                                   @"messages": (messages ?: @[]),
+                                   @"stream": @YES };
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:(baseURLString ?: [self currentBaseURL])]];
+    [request setHTTPMethod:@"POST"];
+    [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    [request setValue:[NSString stringWithFormat:@"Bearer %@", apiKeySnapshot] forHTTPHeaderField:@"Authorization"];
+    NSError *jsonError = nil;
+    NSData *jsonData = [NSJSONSerialization dataWithJSONObject:requestBody options:0 error:&jsonError];
+    if (jsonError) {
+        if (callback) {
+            dispatch_async(dispatch_get_main_queue(), ^{ callback(nil, YES, jsonError); });
+        }
+        return nil;
+    }
+    [request setHTTPBody:jsonData];
+    // SSE 与超时设置（不影响全局会话）
+    [request setValue:@"text/event-stream" forHTTPHeaderField:@"Accept"];
+    [request setTimeoutInterval:60.0];
+    // 调试：记录本次按调用级别的流式请求
+    NSLog(@"[Chat][Streaming][PerCall] baseURL=%@ model=%@", (baseURLString ?: [self currentBaseURL]), (model ?: @""));
+
+    NSURLSessionDataTask *task = [self.session dataTaskWithRequest:request];
+    if (!task) {
+        if (callback) {
+            NSError *taskError = [NSError errorWithDomain:@"com.yourapp.api" code:500 userInfo:@{NSLocalizedDescriptionKey: @"无法创建网络任务"}];
+            dispatch_async(dispatch_get_main_queue(), ^{ callback(nil, YES, taskError); });
+        }
+        return nil;
+    }
+
+    NSNumber *taskIdentifier = @(task.taskIdentifier);
+    dispatch_sync(self.stateAccessQueue, ^{
+        if (callback) { self.taskCallbacks[taskIdentifier] = [callback copy]; }
+        self.taskAccumulatedData[taskIdentifier] = [NSMutableString string];
+        self.taskBuffers[taskIdentifier] = [NSMutableData data];
+        [self.completedTaskIdentifiers removeObject:taskIdentifier];
+        [self.tasksWithPendingUpdate removeObject:taskIdentifier];
+    });
+    [self ensureThrottleTimerForTaskIdentifier:taskIdentifier];
+    [task resume];
+    return task;
 }
 
 // 简化 cancelStreamingTask
