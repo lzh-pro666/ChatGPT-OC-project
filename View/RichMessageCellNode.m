@@ -11,7 +11,6 @@
 @property (nonatomic, assign) BOOL isFromUser;
 @property (nonatomic, strong) NSArray<ParserResult *> *parsedResults;
 @property (nonatomic, copy) NSString *currentMessage;
-@property (nonatomic, assign) NSInteger lastParsedLength;
 @property (nonatomic, copy) NSString *lastParsedText;
 @property (nonatomic, strong) NSArray<ASDisplayNode *> *renderNodes;
 // 已移除未使用的附件容器属性
@@ -40,34 +39,31 @@
 @property (nonatomic, copy) NSString *activeAccumulatedCode; // 累计已渲染到代码节点的文本
 @property (nonatomic, assign) BOOL pendingFinalizeWhenQueueEmpty; // 队列清空后是否退出流式
 
-// 新增：逐行渲染节奏与日志辅助
+// 逐行渲染节奏与日志辅助
 @property (nonatomic, assign) NSTimeInterval lineRenderInterval; // 每行渲染间隔
 @property (nonatomic, assign) NSTimeInterval codeLineRenderInterval; // 代码行渲染间隔（更长，保证手势响应）
-@property (nonatomic, assign) NSInteger processedBlockCounter;   // 已处理块计数（用于日志）
-@property (nonatomic, assign) NSInteger currentBlockIndex;       // 当前块序号（1-based，用于日志）
-@property (nonatomic, assign) NSInteger currentBlockTotalLines;  // 当前块总行数（用于日志）
 @property (nonatomic, assign) NSInteger currentBlockRenderedLineIndex; // 当前块已渲染行数（用于日志）
+@property (nonatomic, assign) NSTimeInterval textLineRevealDuration; // 文本行蒙版渐显时长
+@property (nonatomic, assign) BOOL bypassIntervalOnce; // 文本行动画完成后，下一行立即推进一次
 
-// 新增：在首行渲染前隐藏气泡，避免空白气泡
+// 在首行渲染前隐藏气泡，避免空白气泡
 @property (nonatomic, assign) BOOL startHiddenUntilFirstLine;
-// 新增：调度暂停标记（用户滑动期间暂停逐行推进）
+@property (nonatomic, assign) BOOL hasEmittedFirstVisualLine; // 是否已触发过“首行”事件（全回复维度，而非语义块内）
+// 调度暂停标记（用户滑动期间暂停逐行推进）
 @property (nonatomic, assign) BOOL isSchedulingPaused;
-// 新增：逐行通知帧级合并器
+// 逐行通知帧级合并器
 @property (nonatomic, strong) CADisplayLink *lineNotifyLink;
 @property (nonatomic, assign) BOOL pendingLineNotify;
-// 新增：逐行渲染最小间隔（双保险，避免过密调度）
+// 逐行渲染最小间隔（双保险，避免过密调度）
 @property (nonatomic, assign) NSTimeInterval minLineRenderInterval;
 @property (nonatomic, assign) NSTimeInterval lastLineRenderTime;
-// 新增：交互减速支持（恢复到基线时回落）
-@property (nonatomic, assign) BOOL interactionSlowdownEnabled;
-@property (nonatomic, assign) NSTimeInterval baseLineRenderInterval;
-@property (nonatomic, assign) NSTimeInterval baseCodeLineRenderInterval;
+@property (nonatomic, assign) NSInteger activeTextRevealAnimations; // 运行中渐显动画计数（用于排查并发）
+
 @end
 
 @implementation RichMessageCellNode
 
 // MARK: - Initialization
-
 - (instancetype)initWithMessage:(NSString *)message isFromUser:(BOOL)isFromUser {
     self = [super init];
     if (self) {
@@ -99,26 +95,23 @@
         
         // 新增：初始化丝滑渐显相关属性
         _isStreamingMode = NO;
+        _hasEmittedFirstVisualLine = NO;
         
         // 初始化解析器
         _markdownParser = [[AIMarkdownParser alloc] init];
-        
-        _lastParsedLength = 0;
         
         // 强制首次解析消息内容
         [self parseMessage:message];
         
         // 新增：逐行渲染默认间隔与计数（统一 0.41675s）
-        _lineRenderInterval = 0.41675;
-        _codeLineRenderInterval = 0.41675;
-        _baseLineRenderInterval = _lineRenderInterval;
-        _baseCodeLineRenderInterval = _codeLineRenderInterval;
-        _processedBlockCounter = 0;
-        _currentBlockIndex = 0;
-        _currentBlockTotalLines = 0;
+        _lineRenderInterval = 0.5;
+        _codeLineRenderInterval = 0.5;
         _currentBlockRenderedLineIndex = 0;
+        _textLineRevealDuration = 0.5;
+        _bypassIntervalOnce = NO;
         _minLineRenderInterval = 0.05; // 每行至少 50ms 间隔
         _lastLineRenderTime = 0;
+        _activeTextRevealAnimations = 0;
         
         // 关键改进：确保富文本效果持久化，重新进入聊天界面时不会丢失
         if (message.length > 0) {
@@ -172,8 +165,7 @@
 
 - (ASLayoutSpec *)layoutSpecThatFits:(ASSizeRange)constrainedSize {
     // 若无任何内容与附件且消息为空，返回零高度布局以避免空白气泡
-    CFTimeInterval __t0 = 0; CFTimeInterval __dt = 0;
-
+    
     if ((self.renderNodes.count == 0) && (self.attachmentsData.count == 0) && ((self.currentMessage ?: @"").length == 0)) {
         return [ASLayoutSpec new];
     }
@@ -306,7 +298,7 @@
 
     // 与 cell 边缘的外边距
     ASInsetLayoutSpec *finalSpec = [ASInsetLayoutSpec insetLayoutSpecWithInsets:UIEdgeInsetsMake(5, 12, 5, 12) child:stackSpec];
-    (void)__t0; (void)__dt; (void)finalWidth;
+    (void)finalWidth;
     return finalSpec;
 }
 - (ASDisplayNode *)createAttachmentThumbNode:(id)attachment {
@@ -456,7 +448,6 @@
         // 主线程：UI更新
         dispatch_async(dispatch_get_main_queue(), ^{
             self.parsedResults = [results copy];
-            self.lastParsedLength = message.length;
             self.lastParsedText = [message copy];
             
             [self updateContentNode];
@@ -480,11 +471,14 @@
             self.isUpdating = NO;
             return;
         }
-        
-        // 如果消息不为空但解析失败，显示原始消息
+        // 流式模式下禁止占位符渲染，避免“非富文本一次性上屏”与后续重复
+        if (self.isStreamingMode) {
+            self.isUpdating = NO;
+            return;
+        }
+        // 非流式：如果消息不为空但解析失败，显示原始消息（富文本基础样式）
         NSString *displayText = self.currentMessage;
         ASTextNode *defaultTextNode = [self getOrCreateTextNodeForText:displayText];
-        // 关键修复：确保占位符节点完全可见
         defaultTextNode.alpha = 1.0;
         if (![addedNodes containsObject:defaultTextNode]) {
             [childNodes addObject:defaultTextNode];
@@ -588,7 +582,6 @@
         // 主线程：UI更新
         dispatch_async(dispatch_get_main_queue(), ^{
             strongSelf.parsedResults = [results copy];
-            strongSelf.lastParsedLength = message.length;
             strongSelf.lastParsedText = [message copy];
             
             [strongSelf updateContentNode];
@@ -1051,6 +1044,8 @@
         
         // 退出流式模式
         self.isStreamingMode = NO;
+        // 重置首行事件标记，便于下一条回复复用节点时正确触发
+        self.hasEmittedFirstVisualLine = NO;
         
         // 最终布局更新（无动画）
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -1134,9 +1129,9 @@
 // 新增：恢复流式更新动画
 - (void)resumeStreamingAnimation {
     self.isSchedulingPaused = NO;
-    // 恢复后维持统一节奏（0.41675s），避免交互导致速率改变
-    self.lineRenderInterval = 0.41675;
-    self.codeLineRenderInterval = 0.41675;
+    // 恢复后维持统一节奏（0.5s），避免交互导致速率改变
+    self.lineRenderInterval = 0.5;
+    self.codeLineRenderInterval = 0.5;
     if (self.currentBlockLineTasks.count > 0 || self.pendingSemanticBlockQueue.count > 0) {
         [self scheduleNextLineTask];
     }
@@ -1166,7 +1161,6 @@
         }
     }
     self.lastParsedText = [self.currentMessage copy];
-    self.lastParsedLength = self.lastParsedText.length;
     if (isFinal) { self.pendingFinalizeWhenQueueEmpty = YES; }
     // 尝试启动处理
     [self processNextSemanticBlockIfIdle];
@@ -1215,16 +1209,11 @@
         // 动态行宽：按设备屏幕宽度 * 0.75
         const CGFloat lineWidth = [strongSelf preferredTextMaxWidth];
         
-        
-        
-                        for (AIMarkdownBlock *blk in mdBlocks) {
-                    
-                    
+        for (AIMarkdownBlock *blk in mdBlocks) {
                     if (blk.type == AIMarkdownBlockTypeCodeBlock) {
                         NSString *code = blk.code ?: @"";
                         NSString *lang = blk.language.length ? blk.language : @"plaintext";
-                        
-                        
+                    
                         // 计算此代码块的最长行像素宽度，便于 AICodeBlockNode 设置固定内容宽度
                         CGFloat maxLineWidth = 0.0;
                         UIFont *mono = [UIFont monospacedSystemFontOfSize:14 weight:UIFontWeightRegular];
@@ -1268,6 +1257,58 @@
                     [tasks addObject:@{ @"type": @"text_line",
                                         @"attr": l ?: [[NSAttributedString alloc] initWithString:@""] }];
                 }
+            } else if (blk.type == AIMarkdownBlockTypeListItem) {
+                // 列表项：根据缩进与类型生成前缀，并设置缩进
+                NSString *raw = blk.text ?: @"";
+                NSString *trim = [raw stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+                // 计算缩进层级（前导空白，2 空格≈一级）
+                NSInteger leadingSpaces = 0;
+                for (NSUInteger i = 0; i < raw.length; i++) {
+                    unichar c = [raw characterAtIndex:i];
+                    if (c == ' ') leadingSpaces++; else if (c == '\t') leadingSpaces += 2; else break;
+                }
+                NSInteger level = MAX(0, (NSInteger)floor((double)leadingSpaces / 2.0));
+                // 识别编号列表
+                NSRegularExpression *numRe = [NSRegularExpression regularExpressionWithPattern:@"^\\s*(\\d+)[\\.|)]\\s+" options:0 error:nil];
+                NSTextCheckingResult *m = [numRe firstMatchInString:trim options:0 range:NSMakeRange(0, trim.length)];
+                NSString *prefix = @"• ";
+                NSString *content = trim;
+                if ([trim hasPrefix:@"- "] || [trim hasPrefix:@"* "] || [trim hasPrefix:@"+ "]) {
+                    content = [trim substringFromIndex:2];
+                    static NSArray<NSString *> *bullets; static dispatch_once_t once; dispatch_once(&once, ^{ bullets = @[ @"• ", @"◦ ", @"▪︎ "]; });
+                    prefix = bullets[(NSUInteger)(level % (NSInteger)bullets.count)];
+                } else if (m) {
+                    NSRange rNum = [m rangeAtIndex:1];
+                    NSString *num = (rNum.location != NSNotFound) ? [trim substringWithRange:rNum] : @"1";
+                    NSRange rAll = [m rangeAtIndex:0];
+                    content = (rAll.location != NSNotFound) ? [trim substringFromIndex:(rAll.location + rAll.length)] : trim;
+                    prefix = [NSString stringWithFormat:@"%@. ", num];
+                }
+                // 富文本：前缀 + 内容，设置缩进
+                NSMutableAttributedString *attr = [[NSMutableAttributedString alloc] initWithString:[NSString stringWithFormat:@"%@%@", prefix, content ?: @""]];
+                NSMutableParagraphStyle *ps = [[NSMutableParagraphStyle alloc] init];
+                ps.lineSpacing = 5;
+                ps.lineBreakMode = NSLineBreakByWordWrapping;
+                CGFloat baseIndent = 18.0;
+                CGFloat levelIndent = (CGFloat)level * 16.0;
+                ps.firstLineHeadIndent = 0;
+                ps.headIndent = baseIndent + levelIndent;
+                [attr addAttributes:@{ NSFontAttributeName: [UIFont systemFontOfSize:16],
+                                       NSForegroundColorAttributeName: strongSelf.isFromUser ? [UIColor whiteColor] : [UIColor blackColor],
+                                       NSParagraphStyleAttributeName: ps }
+                             range:NSMakeRange(0, attr.length)];
+                // 对内容部分应用 Markdown 行内样式
+                if (content.length > 0) {
+                    NSRange contentRange = NSMakeRange(prefix.length, attr.length - prefix.length);
+                    NSMutableAttributedString *contentAttr = [[NSMutableAttributedString alloc] initWithAttributedString:[attr attributedSubstringFromRange:contentRange]];
+                    [strongSelf applyMarkdownStyles:contentAttr];
+                    [attr replaceCharactersInRange:contentRange withAttributedString:contentAttr];
+                }
+                NSArray<NSAttributedString *> *lines = [strongSelf lineFragmentsForAttributedString:[attr copy] width:lineWidth];
+                for (NSAttributedString *l in lines) {
+                    [tasks addObject:@{ @"type": @"text_line",
+                                        @"attr": l ?: [[NSAttributedString alloc] initWithString:@""] }];
+                }
             } else {
                 NSMutableAttributedString *paragraph = [[NSMutableAttributedString alloc] initWithString:(blk.text ?: @"")];
                 [paragraph addAttributes:@{ NSFontAttributeName: [UIFont systemFontOfSize:16],
@@ -1285,9 +1326,6 @@
                 }
             }
         }
-        
-        // 记录当前块总行数用于日志
-        strongSelf.currentBlockTotalLines = tasks.count;
         
         if (completion) completion([tasks copy]);
     });
@@ -1316,10 +1354,7 @@
         return;
     }
     
-    self.processedBlockCounter += 1;
-    self.currentBlockIndex = self.processedBlockCounter;
     self.currentBlockRenderedLineIndex = 0;
-    self.currentBlockTotalLines = 0;
     
     
     __weak typeof(self) weakSelf = self;
@@ -1355,10 +1390,6 @@
 // 新增：调度下一行渲染（逐行推进）
 - (void)scheduleNextLineTask {
     if (self.currentBlockLineTasks.count == 0) {
-        // 当前块结束
-        if (self.currentBlockIndex > 0) {
-            
-        }
         // 尝试处理下一个块
         [self processNextSemanticBlockIfIdle];
         return;
@@ -1369,13 +1400,23 @@
     // 为了平滑，使用可配置间隔（首行立即渲染，其余延迟）；代码行使用更长延迟
     NSDictionary *nextTask = [self.currentBlockLineTasks firstObject];
     BOOL isCode = [[nextTask objectForKey:@"type"] isEqualToString:@"code_line"];
+    // 若当前已有文本行渐显在进行，跳过额外调度，等待动画完成回调推进
+    if (!isCode && self.activeTextRevealAnimations > 0) {
+        return;
+    }
     NSTimeInterval baseInterval = isCode ? (self.codeLineRenderInterval > 0.0 ? self.codeLineRenderInterval : 0.3)
                                          : (self.lineRenderInterval > 0.0 ? self.lineRenderInterval : 0.15);
     // 行级节流（双保险）：确保相邻两行至少间隔 minLineRenderInterval
     NSTimeInterval nowTs = CACurrentMediaTime();
     NSTimeInterval since = nowTs - self.lastLineRenderTime;
     NSTimeInterval need = MAX(0.0, self.minLineRenderInterval - since);
-    const NSTimeInterval interval = (self.currentBlockRenderedLineIndex == 0 ? 0.0 : MAX(baseInterval, need));
+    // 仅整条回复的第一行立即渲染，其余行（包括后续语义块的首行）按统一节奏推进
+    NSTimeInterval interval = (self.hasEmittedFirstVisualLine ? MAX(baseInterval, need) : 0.0);
+    if (self.bypassIntervalOnce) {
+        interval = 0.0;
+        self.bypassIntervalOnce = NO;
+    }
+    (void)baseInterval; (void)need; // silence unused in release
     __weak typeof(self) weakSelf = self;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(interval * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         __strong typeof(weakSelf) strongSelf = weakSelf;
@@ -1394,9 +1435,10 @@
     }
     if (self.isSchedulingPaused) { return; }
     // 在首行实际追加前发出"即将追加首行"的事件，便于控制器先移除Thinking
-    if (self.currentBlockRenderedLineIndex == 0) {
+    // 只有在整条回复的第一行到来时，才触发“首行即将追加”的事件
+    if (!self.hasEmittedFirstVisualLine) {
         [[NSNotificationCenter defaultCenter] postNotificationName:@"RichMessageCellNodeWillAppendFirstLine" object:self];
-        // 首行即将加入，显示气泡与内容
+        self.hasEmittedFirstVisualLine = YES;
         if (self.startHiddenUntilFirstLine) {
             self.bubbleNode.hidden = NO;
             self.contentNode.hidden = NO;
@@ -1434,7 +1476,20 @@
             NSMutableArray *mutable = self.renderNodes ? [self.renderNodes mutableCopy] : [NSMutableArray array];
             [mutable addObject:textNode];
             self.renderNodes = [mutable copy];
-            
+            // 对新增文本行应用从左到右的蒙版渐显动画，动画完成后再推进下一行
+            __weak typeof(self) weakSelf = self;
+            [self immediateLayoutUpdate];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                __strong typeof(weakSelf) strongSelf = weakSelf;
+                if (!strongSelf) { return; }
+                strongSelf.activeTextRevealAnimations += 1;
+                [strongSelf _applyLeftToRightRevealMaskOnNode:textNode duration:strongSelf.textLineRevealDuration completion:^{
+                    strongSelf.activeTextRevealAnimations = MAX(0, strongSelf.activeTextRevealAnimations - 1);
+                    // 动画结束后立即推进下一行（本次跳过间隔）
+                    strongSelf.bypassIntervalOnce = YES;
+                    [strongSelf scheduleNextLineTask];
+                }];
+            });
         } else {
             
             // 尝试使用备用文本创建
@@ -1454,6 +1509,8 @@
                 NSMutableArray *mutable = self.renderNodes ? [self.renderNodes mutableCopy] : [NSMutableArray array];
                 [mutable addObject:textNode];
                 self.renderNodes = [mutable copy];
+                // 空文本兜底也推进（无需动画）
+                [self scheduleNextLineTask];
             }
         }
     } else if ([type isEqualToString:@"code_line"]) {
@@ -1500,8 +1557,12 @@
     // 合并逐行通知：只标记待通知，在下一帧发送一次
     [self scheduleBatchedLineNotification];
     
-    // 推进下一行
-    [self scheduleNextLineTask];
+    // 推进下一行：
+    // - 文本行在动画完成回调中推进
+    // - 代码行按节奏立即推进
+    if ([type isEqualToString:@"code_line"]) {
+        [self scheduleNextLineTask];
+    }
 }
 
 // 新增：外部可配置每行渲染间隔
@@ -1513,8 +1574,60 @@
     _codeLineRenderInterval = value;
 }
 
-// 新增：调试渲染节点状态
-- (void)debugRenderNodesState {}
+#pragma mark - 文本行蒙版渐显
+
+- (void)_applyLeftToRightRevealMaskOnNode:(ASDisplayNode *)node
+                                  duration:(NSTimeInterval)duration
+                                 completion:(dispatch_block_t)completion {
+    [self _applyLeftToRightRevealMaskOnNode:node duration:duration tries:4 completion:completion];
+}
+
+- (void)_applyLeftToRightRevealMaskOnNode:(ASDisplayNode *)node
+                                  duration:(NSTimeInterval)duration
+                                      tries:(NSInteger)tries
+                                 completion:(dispatch_block_t)completion {
+    if (!node) { if (completion) completion(); return; }
+    CALayer *targetLayer = node.layer;
+    if (!targetLayer) { if (completion) completion(); return; }
+    CGSize size = node.bounds.size;
+    if ((size.width < 1.0 || size.height < 1.0) && tries > 0) {
+        __weak typeof(self) weakSelf = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.016 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) { if (completion) completion(); return; }
+            [strongSelf _applyLeftToRightRevealMaskOnNode:node duration:duration tries:(tries - 1) completion:completion];
+        });
+        return;
+    }
+    if (size.width < 1.0 || size.height < 1.0) {
+        if (completion) completion();
+        return;
+    }
+    CALayer *maskLayer = [CALayer layer];
+    maskLayer.backgroundColor = [UIColor blackColor].CGColor;
+    maskLayer.anchorPoint = CGPointMake(0.0, 0.5);
+    maskLayer.bounds = CGRectMake(0, 0, size.width, size.height);
+    maskLayer.position = CGPointMake(0, size.height * 0.5);
+    maskLayer.transform = CATransform3DMakeScale(0.0, 1.0, 1.0);
+    targetLayer.mask = maskLayer;
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    [CATransaction setCompletionBlock:^{
+        // 复位到最终状态并移除蒙版，避免后续布局受影响
+        maskLayer.transform = CATransform3DIdentity;
+        targetLayer.mask = nil;
+        if (completion) completion();
+    }];
+    CABasicAnimation *anim = [CABasicAnimation animationWithKeyPath:@"transform.scale.x"];
+    anim.fromValue = @(0.0);
+    anim.toValue = @(1.0);
+    anim.duration = MAX(0.01, duration);
+    anim.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+    [maskLayer addAnimation:anim forKey:@"revealX"];
+    // 将模型层同步到最终值
+    maskLayer.transform = CATransform3DIdentity;
+    [CATransaction commit];
+}
 
 // MARK: - 帧级合并通知
 - (void)scheduleBatchedLineNotification {
@@ -1568,6 +1681,44 @@
                                                                                   isCodeBlock:NO
                                                                             codeBlockLanguage:nil];
                 [results addObject:headingResult];
+            } else if (block.type == AIMarkdownBlockTypeListItem) {
+                // 非流式整块渲染时的列表项样式
+                NSString *raw = block.text ?: @"";
+                NSString *trim = [raw stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+                NSInteger leadingSpaces = 0; for (NSUInteger i = 0; i < raw.length; i++) { unichar c = [raw characterAtIndex:i]; if (c == ' ') leadingSpaces++; else if (c == '\t') leadingSpaces += 2; else break; }
+                NSInteger level = MAX(0, (NSInteger)floor((double)leadingSpaces / 2.0));
+                NSRegularExpression *numRe = [NSRegularExpression regularExpressionWithPattern:@"^\\s*(\\d+)[\\.|)]\\s+" options:0 error:nil];
+                NSTextCheckingResult *m = [numRe firstMatchInString:trim options:0 range:NSMakeRange(0, trim.length)];
+                NSString *prefix = @"• ";
+                NSString *content = trim;
+                if ([trim hasPrefix:@"- "] || [trim hasPrefix:@"* "] || [trim hasPrefix:@"+ "]) {
+                    content = [trim substringFromIndex:2];
+                    static NSArray<NSString *> *bullets; static dispatch_once_t once; dispatch_once(&once, ^{ bullets = @[ @"• ", @"◦ ", @"▪︎ "]; });
+                    prefix = bullets[(NSUInteger)(level % (NSInteger)bullets.count)];
+                } else if (m) {
+                    NSRange rNum = [m rangeAtIndex:1];
+                    NSString *num = (rNum.location != NSNotFound) ? [trim substringWithRange:rNum] : @"1";
+                    NSRange rAll = [m rangeAtIndex:0];
+                    content = (rAll.location != NSNotFound) ? [trim substringFromIndex:(rAll.location + rAll.length)] : trim;
+                    prefix = [NSString stringWithFormat:@"%@. ", num];
+                }
+                NSMutableAttributedString *attr = [[NSMutableAttributedString alloc] initWithString:[NSString stringWithFormat:@"%@%@", prefix, content ?: @""]];
+                NSMutableParagraphStyle *ps = [[NSMutableParagraphStyle alloc] init];
+                ps.lineSpacing = 5; ps.lineBreakMode = NSLineBreakByWordWrapping;
+                CGFloat baseIndent = 18.0; CGFloat levelIndent = (CGFloat)level * 16.0;
+                ps.firstLineHeadIndent = 0; ps.headIndent = baseIndent + levelIndent;
+                [attr addAttributes:@{ NSFontAttributeName: [UIFont systemFontOfSize:16],
+                                       NSForegroundColorAttributeName: self.isFromUser ? [UIColor whiteColor] : [UIColor blackColor],
+                                       NSParagraphStyleAttributeName: ps }
+                             range:NSMakeRange(0, attr.length)];
+                if (content.length > 0) {
+                    NSRange contentRange = NSMakeRange(prefix.length, attr.length - prefix.length);
+                    NSMutableAttributedString *contentAttr = [[NSMutableAttributedString alloc] initWithAttributedString:[attr attributedSubstringFromRange:contentRange]];
+                    [self applyMarkdownStyles:contentAttr];
+                    [attr replaceCharactersInRange:contentRange withAttributedString:contentAttr];
+                }
+                ParserResult *li = [[ParserResult alloc] initWithAttributedString:[attr copy] isCodeBlock:NO codeBlockLanguage:nil];
+                [results addObject:li];
             } else {
                 NSMutableAttributedString *paragraphText = [[NSMutableAttributedString alloc] initWithString:(block.text ?: @"")];
                 [paragraphText addAttributes:@{

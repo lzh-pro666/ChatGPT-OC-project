@@ -14,7 +14,7 @@
 #import "MessageContentUtils.h"
 
 // MARK: - 常量定义
-static const NSTimeInterval kLineRenderInterval = 0.41675; // 逐行渲染的时间间隔（秒），统一文本/代码行节奏
+static const NSTimeInterval kLineRenderInterval = 0.5; // 逐行渲染的时间间隔（秒），统一文本/代码行节奏
 static const CGFloat kAutoScrollBottomTolerance = 120.0; // 视为"接近底部"的容差像素（更宽松提高粘底响应）
 static const CGFloat kContentHeightIncreaseThreshold = 10.0; // 内容高度显著增长阈值（如代码块展开触发粘底）
 static const NSTimeInterval kAutoScrollDebounceSeconds = 0.02; // 自动粘底防抖时间（秒），避免频繁 setContentOffset
@@ -748,12 +748,17 @@ static const CGFloat kAttachmentsTextTopPadding = 8.0; // 缩略图行与输入�
     CGFloat contentHeight = tv.contentSize.height;
     CGFloat viewHeight = tv.bounds.size.height;
     CGFloat visibleHeight = viewHeight - tv.adjustedContentInset.bottom;
+    // 若内容高度不足以填满一屏，仍允许滚到“底部”（即最小偏移处），避免初次插入时无法触发滚动
     CGFloat targetOffsetY = contentHeight - visibleHeight;
     CGFloat minOffsetY = -tv.adjustedContentInset.top;
     if (isnan(targetOffsetY) || isinf(targetOffsetY)) {
         targetOffsetY = minOffsetY;
     }
     if (targetOffsetY < minOffsetY) targetOffsetY = minOffsetY;
+    // 小内容时，确保至少前进一个极小距离，触发滚动路径与粘底链路
+    if (fabs(tv.contentOffset.y - targetOffsetY) < 0.5 && contentHeight <= visibleHeight + 1.0) {
+        targetOffsetY = MIN(minOffsetY + 0.5, minOffsetY + 1.0);
+    }
     CGPoint current = tv.contentOffset;
     return CGPointMake(current.x, targetOffsetY);
 }
@@ -1074,7 +1079,6 @@ static const CGFloat kAttachmentsTextTopPadding = 8.0; // 缩略图行与输入�
 }
 
 // 删除 calculateLineCountForTextView:，改为 sizeThatFits
-
 - (BOOL)textView:(UITextView *)textView shouldChangeTextInRange:(NSRange)range replacementText:(NSString *)text {
     if ([text isEqualToString:@"\n"] && textView.text.length == 0) {
         return NO;
@@ -1769,9 +1773,7 @@ static const CGFloat kAttachmentsTextTopPadding = 8.0; // 缩略图行与输入�
 
 - (void)performAutoScrollWithContext:(NSString *)context animated:(BOOL)animated {
     CFTimeInterval __t0 = 0; CFTimeInterval __dt = 0;
-    #ifdef DEBUG
-    __t0 = CACurrentMediaTime();
-    #endif
+
     if (![self shouldPerformAutoScroll]) { return; }
     UITableView *tv = self.tableNode.view;
     if (!tv) { return; }
