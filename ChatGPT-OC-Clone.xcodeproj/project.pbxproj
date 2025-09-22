@@ -7,6 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		374168BC3182567EEC9559E8 /* Pods_ChatGPT_OC_Clone.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 7C790447121D9E48AE8F891F /* Pods_ChatGPT_OC_Clone.framework */; };
+		C8C7E98A2E765AC300923F4E /* CodeHighlighterBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8C7E9892E765AC300923F4E /* CodeHighlighterBridge.swift */; };
+		C8C7E98C2E765ACA00923F4E /* MarkdownParserBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8C7E98B2E765ACA00923F4E /* MarkdownParserBridge.swift */; };
+		C8C7E98F2E76B38100923F4E /* MessageContentUtils.m in Sources */ = {isa = PBXBuildFile; fileRef = C8C7E98E2E76B38100923F4E /* MessageContentUtils.m */; };
 		C8DE249D2DB4A17600ED8EC6 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = C8DE24832DB4A17600ED8EC6 /* Assets.xcassets */; };
 		C8DE249E2DB4A17600ED8EC6 /* context.md in Resources */ = {isa = PBXBuildFile; fileRef = C8DE248B2DB4A17600ED8EC6 /* context.md */; };
 		C8DE249F2DB4A17600ED8EC6 /* index.html in Resources */ = {isa = PBXBuildFile; fileRef = C8DE248E2DB4A17600ED8EC6 /* index.html */; };
@@ -23,9 +27,42 @@
 		C8DE24AB2DB4A17600ED8EC6 /* MessageCell.m in Sources */ = {isa = PBXBuildFile; fileRef = C8DE24962DB4A17600ED8EC6 /* MessageCell.m */; };
 		C8DE24AC2DB4A17600ED8EC6 /* SceneDelegate.m in Sources */ = {isa = PBXBuildFile; fileRef = C8DE24982DB4A17600ED8EC6 /* SceneDelegate.m */; };
 		C8DE24AD2DB4A17600ED8EC6 /* ThinkingView.m in Sources */ = {isa = PBXBuildFile; fileRef = C8DE249A2DB4A17600ED8EC6 /* ThinkingView.m */; };
+		C8E644AD2E69134300FF16A9 /* SemanticBlockParser.m in Sources */ = {isa = PBXBuildFile; fileRef = C8E644AB2E69134300FF16A9 /* SemanticBlockParser.m */; };
+		C8E6457B2E6FB2B100FF16A9 /* AttachmentScrollNode.m in Sources */ = {isa = PBXBuildFile; fileRef = C8E6457A2E6FB2B100FF16A9 /* AttachmentScrollNode.m */; };
+		C8E94DC02E73B7D3002F52EF /* CoreTelephony.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C8E94DBF2E73B7D3002F52EF /* CoreTelephony.framework */; };
+		C8E94DC22E73B7DF002F52EF /* SystemConfiguration.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C8E94DC12E73B7DF002F52EF /* SystemConfiguration.framework */; };
+		C8E94DC42E73B7E9002F52EF /* libc++.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = C8E94DC32E73B7E9002F52EF /* libc++.tbd */; };
+		C8E94DC62E73B7FA002F52EF /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C8E94DC52E73B7FA002F52EF /* Foundation.framework */; };
+		C8F9E1D72E55A755001578D6 /* ParserResult.m in Sources */ = {isa = PBXBuildFile; fileRef = C8F9E1D42E55A755001578D6 /* ParserResult.m */; };
+		C8F9E1D82E55A755001578D6 /* ResponseParsingTask.m in Sources */ = {isa = PBXBuildFile; fileRef = C8F9E1D62E55A755001578D6 /* ResponseParsingTask.m */; };
+		C8F9E1DD2E55A75D001578D6 /* AISyntaxHighlighter.m in Sources */ = {isa = PBXBuildFile; fileRef = C8F9E1DC2E55A75D001578D6 /* AISyntaxHighlighter.m */; };
+		C8F9E1DE2E55A75D001578D6 /* AIMarkdownParser.m in Sources */ = {isa = PBXBuildFile; fileRef = C8F9E1DA2E55A75D001578D6 /* AIMarkdownParser.m */; };
+		C8F9E1F02E55A774001578D6 /* RichMessageCellNode.m in Sources */ = {isa = PBXBuildFile; fileRef = C8F9E1ED2E55A774001578D6 /* RichMessageCellNode.m */; };
+		C8F9E1F12E55A774001578D6 /* AttachmentThumbnailView.m in Sources */ = {isa = PBXBuildFile; fileRef = C8F9E1E22E55A774001578D6 /* AttachmentThumbnailView.m */; };
+		C8F9E1F22E55A774001578D6 /* AICodeBlockNode.m in Sources */ = {isa = PBXBuildFile; fileRef = C8F9E1E02E55A774001578D6 /* AICodeBlockNode.m */; };
+		C8F9E1F42E55A774001578D6 /* ChatSwiftUIView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8F9E1E42E55A774001578D6 /* ChatSwiftUIView.swift */; };
+		C8F9E1F52E55A774001578D6 /* CodeBlockView.m in Sources */ = {isa = PBXBuildFile; fileRef = C8F9E1E62E55A774001578D6 /* CodeBlockView.m */; };
+		C8F9E1F62E55A774001578D6 /* ThinkingNode.m in Sources */ = {isa = PBXBuildFile; fileRef = C8F9E1EF2E55A774001578D6 /* ThinkingNode.m */; };
+		C8F9E1F72E55A774001578D6 /* CustomMenuView.m in Sources */ = {isa = PBXBuildFile; fileRef = C8F9E1E82E55A774001578D6 /* CustomMenuView.m */; };
+		C8F9E1FB2E55A789001578D6 /* ChatDetailViewControllerV2.m in Sources */ = {isa = PBXBuildFile; fileRef = C8F9E1FA2E55A789001578D6 /* ChatDetailViewControllerV2.m */; };
+		C8F9E2012E55AC34001578D6 /* MediaPickerManager.m in Sources */ = {isa = PBXBuildFile; fileRef = C8F9E1FF2E55AC34001578D6 /* MediaPickerManager.m */; };
+		C8F9E2022E55AC34001578D6 /* AlertHelper.m in Sources */ = {isa = PBXBuildFile; fileRef = C8F9E1FD2E55AC34001578D6 /* AlertHelper.m */; };
+		C8F9E2072E55C7A3001578D6 /* Highlightr in Frameworks */ = {isa = PBXBuildFile; productRef = C8F9E2062E55C7A3001578D6 /* Highlightr */; };
+		C8F9E2292E5C46D4001578D6 /* GoogleService-Info.plist in Resources */ = {isa = PBXBuildFile; fileRef = C8F9E2282E5C46D4001578D6 /* GoogleService-Info.plist */; };
+		C8F9E22C2E5C6381001578D6 /* OSSUploadManager.m in Sources */ = {isa = PBXBuildFile; fileRef = C8F9E22B2E5C6381001578D6 /* OSSUploadManager.m */; };
+		C8F9E2362E5DA02C001578D6 /* ImagePreviewOverlay.m in Sources */ = {isa = PBXBuildFile; fileRef = C8F9E2352E5DA02C001578D6 /* ImagePreviewOverlay.m */; };
+		C8F9E23B2E5DCE34001578D6 /* MediaMessageCellNode.m in Sources */ = {isa = PBXBuildFile; fileRef = C8F9E2382E5DCE34001578D6 /* MediaMessageCellNode.m */; };
+		C8F9E23C2E5DCE34001578D6 /* MessageCellNode.m in Sources */ = {isa = PBXBuildFile; fileRef = C8F9E23A2E5DCE34001578D6 /* MessageCellNode.m */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		1B2F8DA4A1CEA973CF912D96 /* Pods-ChatGPT-OC-Clone.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-ChatGPT-OC-Clone.release.xcconfig"; path = "Target Support Files/Pods-ChatGPT-OC-Clone/Pods-ChatGPT-OC-Clone.release.xcconfig"; sourceTree = "<group>"; };
+		2DFF72DF3604AD2E549F230C /* Pods-ChatGPT-OC-Clone.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-ChatGPT-OC-Clone.debug.xcconfig"; path = "Target Support Files/Pods-ChatGPT-OC-Clone/Pods-ChatGPT-OC-Clone.debug.xcconfig"; sourceTree = "<group>"; };
+		7C790447121D9E48AE8F891F /* Pods_ChatGPT_OC_Clone.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_ChatGPT_OC_Clone.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		C8C7E9892E765AC300923F4E /* CodeHighlighterBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodeHighlighterBridge.swift; sourceTree = "<group>"; };
+		C8C7E98B2E765ACA00923F4E /* MarkdownParserBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownParserBridge.swift; sourceTree = "<group>"; };
+		C8C7E98D2E76B38100923F4E /* MessageContentUtils.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MessageContentUtils.h; sourceTree = "<group>"; };
+		C8C7E98E2E76B38100923F4E /* MessageContentUtils.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = MessageContentUtils.m; sourceTree = "<group>"; };
 		C8DE24502DB4A01500ED8EC6 /* ChatGPT-OC-Clone.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "ChatGPT-OC-Clone.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		C8DE247F2DB4A17600ED8EC6 /* APIManager.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = APIManager.h; sourceTree = "<group>"; };
 		C8DE24802DB4A17600ED8EC6 /* APIManager.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = APIManager.m; sourceTree = "<group>"; };
@@ -54,6 +91,54 @@
 		C8DE24992DB4A17600ED8EC6 /* ThinkingView.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ThinkingView.h; sourceTree = "<group>"; };
 		C8DE249A2DB4A17600ED8EC6 /* ThinkingView.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ThinkingView.m; sourceTree = "<group>"; };
 		C8DE249C2DB4A17600ED8EC6 /* chatgpttest2.xcdatamodel */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcdatamodel; path = chatgpttest2.xcdatamodel; sourceTree = "<group>"; };
+		C8E644AA2E69134300FF16A9 /* SemanticBlockParser.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = SemanticBlockParser.h; sourceTree = "<group>"; };
+		C8E644AB2E69134300FF16A9 /* SemanticBlockParser.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = SemanticBlockParser.m; sourceTree = "<group>"; };
+		C8E645792E6FB2B100FF16A9 /* AttachmentScrollNode.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = AttachmentScrollNode.h; sourceTree = "<group>"; };
+		C8E6457A2E6FB2B100FF16A9 /* AttachmentScrollNode.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = AttachmentScrollNode.m; sourceTree = "<group>"; };
+		C8E94DBC2E73B753002F52EF /* ChatGPT-OC-Clone.xcodeproj */ = {isa = PBXFileReference; lastKnownFileType = "wrapper.pb-project"; name = "ChatGPT-OC-Clone.xcodeproj"; path = "../ChatGPT-OC-Clone.xcodeproj"; sourceTree = "<group>"; };
+		C8E94DBF2E73B7D3002F52EF /* CoreTelephony.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreTelephony.framework; path = System/Library/Frameworks/CoreTelephony.framework; sourceTree = SDKROOT; };
+		C8E94DC12E73B7DF002F52EF /* SystemConfiguration.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SystemConfiguration.framework; path = System/Library/Frameworks/SystemConfiguration.framework; sourceTree = SDKROOT; };
+		C8E94DC32E73B7E9002F52EF /* libc++.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = "libc++.tbd"; path = "usr/lib/libc++.tbd"; sourceTree = SDKROOT; };
+		C8E94DC52E73B7FA002F52EF /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = System/Library/Frameworks/Foundation.framework; sourceTree = SDKROOT; };
+		C8F9E1D32E55A755001578D6 /* ParserResult.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ParserResult.h; sourceTree = "<group>"; };
+		C8F9E1D42E55A755001578D6 /* ParserResult.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ParserResult.m; sourceTree = "<group>"; };
+		C8F9E1D52E55A755001578D6 /* ResponseParsingTask.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ResponseParsingTask.h; sourceTree = "<group>"; };
+		C8F9E1D62E55A755001578D6 /* ResponseParsingTask.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ResponseParsingTask.m; sourceTree = "<group>"; };
+		C8F9E1D92E55A75D001578D6 /* AIMarkdownParser.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = AIMarkdownParser.h; sourceTree = "<group>"; };
+		C8F9E1DA2E55A75D001578D6 /* AIMarkdownParser.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = AIMarkdownParser.m; sourceTree = "<group>"; };
+		C8F9E1DB2E55A75D001578D6 /* AISyntaxHighlighter.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = AISyntaxHighlighter.h; sourceTree = "<group>"; };
+		C8F9E1DC2E55A75D001578D6 /* AISyntaxHighlighter.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = AISyntaxHighlighter.m; sourceTree = "<group>"; };
+		C8F9E1DF2E55A774001578D6 /* AICodeBlockNode.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = AICodeBlockNode.h; sourceTree = "<group>"; };
+		C8F9E1E02E55A774001578D6 /* AICodeBlockNode.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = AICodeBlockNode.m; sourceTree = "<group>"; };
+		C8F9E1E12E55A774001578D6 /* AttachmentThumbnailView.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = AttachmentThumbnailView.h; sourceTree = "<group>"; };
+		C8F9E1E22E55A774001578D6 /* AttachmentThumbnailView.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = AttachmentThumbnailView.m; sourceTree = "<group>"; };
+		C8F9E1E32E55A774001578D6 /* ChatGPT-OC-Clone-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "ChatGPT-OC-Clone-Bridging-Header.h"; sourceTree = "<group>"; };
+		C8F9E1E42E55A774001578D6 /* ChatSwiftUIView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatSwiftUIView.swift; sourceTree = "<group>"; };
+		C8F9E1E52E55A774001578D6 /* CodeBlockView.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CodeBlockView.h; sourceTree = "<group>"; };
+		C8F9E1E62E55A774001578D6 /* CodeBlockView.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = CodeBlockView.m; sourceTree = "<group>"; };
+		C8F9E1E72E55A774001578D6 /* CustomMenuView.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CustomMenuView.h; sourceTree = "<group>"; };
+		C8F9E1E82E55A774001578D6 /* CustomMenuView.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = CustomMenuView.m; sourceTree = "<group>"; };
+		C8F9E1EB2E55A774001578D6 /* MessageNode.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MessageNode.h; sourceTree = "<group>"; };
+		C8F9E1EC2E55A774001578D6 /* RichMessageCellNode.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = RichMessageCellNode.h; sourceTree = "<group>"; };
+		C8F9E1ED2E55A774001578D6 /* RichMessageCellNode.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = RichMessageCellNode.m; sourceTree = "<group>"; };
+		C8F9E1EE2E55A774001578D6 /* ThinkingNode.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ThinkingNode.h; sourceTree = "<group>"; };
+		C8F9E1EF2E55A774001578D6 /* ThinkingNode.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ThinkingNode.m; sourceTree = "<group>"; };
+		C8F9E1F82E55A778001578D6 /* ChatGPT-OC-Clone-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "ChatGPT-OC-Clone-Bridging-Header.h"; sourceTree = "<group>"; };
+		C8F9E1F92E55A789001578D6 /* ChatDetailViewControllerV2.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ChatDetailViewControllerV2.h; sourceTree = "<group>"; };
+		C8F9E1FA2E55A789001578D6 /* ChatDetailViewControllerV2.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ChatDetailViewControllerV2.m; sourceTree = "<group>"; };
+		C8F9E1FC2E55AC34001578D6 /* AlertHelper.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = AlertHelper.h; sourceTree = "<group>"; };
+		C8F9E1FD2E55AC34001578D6 /* AlertHelper.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = AlertHelper.m; sourceTree = "<group>"; };
+		C8F9E1FE2E55AC34001578D6 /* MediaPickerManager.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MediaPickerManager.h; sourceTree = "<group>"; };
+		C8F9E1FF2E55AC34001578D6 /* MediaPickerManager.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = MediaPickerManager.m; sourceTree = "<group>"; };
+		C8F9E2282E5C46D4001578D6 /* GoogleService-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "GoogleService-Info.plist"; sourceTree = "<group>"; };
+		C8F9E22A2E5C6381001578D6 /* OSSUploadManager.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = OSSUploadManager.h; sourceTree = "<group>"; };
+		C8F9E22B2E5C6381001578D6 /* OSSUploadManager.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = OSSUploadManager.m; sourceTree = "<group>"; };
+		C8F9E2342E5DA02C001578D6 /* ImagePreviewOverlay.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ImagePreviewOverlay.h; sourceTree = "<group>"; };
+		C8F9E2352E5DA02C001578D6 /* ImagePreviewOverlay.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ImagePreviewOverlay.m; sourceTree = "<group>"; };
+		C8F9E2372E5DCE34001578D6 /* MediaMessageCellNode.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MediaMessageCellNode.h; sourceTree = "<group>"; };
+		C8F9E2382E5DCE34001578D6 /* MediaMessageCellNode.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = MediaMessageCellNode.m; sourceTree = "<group>"; };
+		C8F9E2392E5DCE34001578D6 /* MessageCellNode.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = MessageCellNode.h; sourceTree = "<group>"; };
+		C8F9E23A2E5DCE34001578D6 /* MessageCellNode.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = MessageCellNode.m; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -61,23 +146,77 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C8E94DC62E73B7FA002F52EF /* Foundation.framework in Frameworks */,
+				C8E94DC42E73B7E9002F52EF /* libc++.tbd in Frameworks */,
+				C8E94DC22E73B7DF002F52EF /* SystemConfiguration.framework in Frameworks */,
+				C8E94DC02E73B7D3002F52EF /* CoreTelephony.framework in Frameworks */,
+				C8F9E2072E55C7A3001578D6 /* Highlightr in Frameworks */,
+				374168BC3182567EEC9559E8 /* Pods_ChatGPT_OC_Clone.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		A09BABEDAA1FC7AFE8D0B3B9 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				C8E94DC52E73B7FA002F52EF /* Foundation.framework */,
+				C8E94DC32E73B7E9002F52EF /* libc++.tbd */,
+				C8E94DC12E73B7DF002F52EF /* SystemConfiguration.framework */,
+				C8E94DBF2E73B7D3002F52EF /* CoreTelephony.framework */,
+				7C790447121D9E48AE8F891F /* Pods_ChatGPT_OC_Clone.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
 		C81D8B652DB13956007B8C81 = {
 			isa = PBXGroup;
 			children = (
 				C8DE249B2DB4A17600ED8EC6 /* ChatGPT-OC-Clone */,
 				C8DE24502DB4A01500ED8EC6 /* ChatGPT-OC-Clone.app */,
+				F8E7B8FDD1B2D4397A10DC6D /* Pods */,
+				A09BABEDAA1FC7AFE8D0B3B9 /* Frameworks */,
 			);
+			sourceTree = "<group>";
+		};
+		C8C7E9862E75A30500923F4E /* normalMessageView */ = {
+			isa = PBXGroup;
+			children = (
+				C8F9E1E22E55A774001578D6 /* AttachmentThumbnailView.m */,
+				C8F9E1E12E55A774001578D6 /* AttachmentThumbnailView.h */,
+				C8F9E1E42E55A774001578D6 /* ChatSwiftUIView.swift */,
+			);
+			path = normalMessageView;
+			sourceTree = "<group>";
+		};
+		C8C7E9872E75A3FA00923F4E /* deleteView */ = {
+			isa = PBXGroup;
+			children = (
+				C8E645792E6FB2B100FF16A9 /* AttachmentScrollNode.h */,
+				C8E6457A2E6FB2B100FF16A9 /* AttachmentScrollNode.m */,
+				C8DE249A2DB4A17600ED8EC6 /* ThinkingView.m */,
+				C8DE24992DB4A17600ED8EC6 /* ThinkingView.h */,
+				C8F9E1E62E55A774001578D6 /* CodeBlockView.m */,
+				C8F9E1E52E55A774001578D6 /* CodeBlockView.h */,
+				C8F9E1EB2E55A774001578D6 /* MessageNode.h */,
+			);
+			path = deleteView;
+			sourceTree = "<group>";
+		};
+		C8C7E9882E75A6A900923F4E /* normalMessageModel */ = {
+			isa = PBXGroup;
+			children = (
+				C8F9E1D52E55A755001578D6 /* ResponseParsingTask.h */,
+				C8F9E1D62E55A755001578D6 /* ResponseParsingTask.m */,
+			);
+			path = normalMessageModel;
 			sourceTree = "<group>";
 		};
 		C8DE249B2DB4A17600ED8EC6 /* ChatGPT-OC-Clone */ = {
 			isa = PBXGroup;
 			children = (
+				C8F9E2002E55AC34001578D6 /* Tool */,
 				C8DE24B22DB4A2F400ED8EC6 /* Resources */,
 				C8DE24B12DB4A2BD00ED8EC6 /* Application */,
 				C8DE24B02DB4A20F00ED8EC6 /* Model */,
@@ -87,6 +226,8 @@
 				C8DE248E2DB4A17600ED8EC6 /* index.html */,
 				C8DE24912DB4A17600ED8EC6 /* LaunchScreen.storyboard */,
 				C8DE248F2DB4A17600ED8EC6 /* Info.plist */,
+				C8F9E2282E5C46D4001578D6 /* GoogleService-Info.plist */,
+				C8E94DBC2E73B753002F52EF /* ChatGPT-OC-Clone.xcodeproj */,
 			);
 			path = "ChatGPT-OC-Clone";
 			sourceTree = "<group>";
@@ -94,6 +235,8 @@
 		C8DE24AE2DB4A17900ED8EC6 /* Controller */ = {
 			isa = PBXGroup;
 			children = (
+				C8F9E1F92E55A789001578D6 /* ChatDetailViewControllerV2.h */,
+				C8F9E1FA2E55A789001578D6 /* ChatDetailViewControllerV2.m */,
 				C8DE24892DB4A17600ED8EC6 /* ChatsViewController.h */,
 				C8DE248A2DB4A17600ED8EC6 /* ChatsViewController.m */,
 				C8DE24862DB4A17600ED8EC6 /* ChatDetailViewController.h */,
@@ -107,12 +250,28 @@
 		C8DE24AF2DB4A1CA00ED8EC6 /* View */ = {
 			isa = PBXGroup;
 			children = (
+				C8C7E9862E75A30500923F4E /* normalMessageView */,
+				C8F9E2372E5DCE34001578D6 /* MediaMessageCellNode.h */,
+				C8F9E2382E5DCE34001578D6 /* MediaMessageCellNode.m */,
+				C8F9E2392E5DCE34001578D6 /* MessageCellNode.h */,
+				C8F9E23A2E5DCE34001578D6 /* MessageCellNode.m */,
+				C8F9E2342E5DA02C001578D6 /* ImagePreviewOverlay.h */,
+				C8F9E2352E5DA02C001578D6 /* ImagePreviewOverlay.m */,
+				C8F9E1DF2E55A774001578D6 /* AICodeBlockNode.h */,
+				C8F9E1E02E55A774001578D6 /* AICodeBlockNode.m */,
+				C8F9E1E32E55A774001578D6 /* ChatGPT-OC-Clone-Bridging-Header.h */,
+				C8F9E1E72E55A774001578D6 /* CustomMenuView.h */,
+				C8F9E1E82E55A774001578D6 /* CustomMenuView.m */,
+				C8F9E1EC2E55A774001578D6 /* RichMessageCellNode.h */,
+				C8F9E1ED2E55A774001578D6 /* RichMessageCellNode.m */,
+				C8F9E1EE2E55A774001578D6 /* ThinkingNode.h */,
+				C8F9E1EF2E55A774001578D6 /* ThinkingNode.m */,
 				C8DE24962DB4A17600ED8EC6 /* MessageCell.m */,
 				C8DE24952DB4A17600ED8EC6 /* MessageCell.h */,
 				C8DE24842DB4A17600ED8EC6 /* ChatCell.h */,
 				C8DE24852DB4A17600ED8EC6 /* ChatCell.m */,
-				C8DE24992DB4A17600ED8EC6 /* ThinkingView.h */,
-				C8DE249A2DB4A17600ED8EC6 /* ThinkingView.m */,
+				C8F9E1F82E55A778001578D6 /* ChatGPT-OC-Clone-Bridging-Header.h */,
+				C8C7E9872E75A3FA00923F4E /* deleteView */,
 			);
 			path = View;
 			sourceTree = "<group>";
@@ -120,11 +279,9 @@
 		C8DE24B02DB4A20F00ED8EC6 /* Model */ = {
 			isa = PBXGroup;
 			children = (
+				C8F9E1D32E55A755001578D6 /* ParserResult.h */,
+				C8F9E1D42E55A755001578D6 /* ParserResult.m */,
 				C8DE24882DB4A17600ED8EC6 /* chatgpttest2.xcdatamodeld */,
-				C8DE247F2DB4A17600ED8EC6 /* APIManager.h */,
-				C8DE24802DB4A17600ED8EC6 /* APIManager.m */,
-				C8DE248C2DB4A17600ED8EC6 /* CoreDataManager.h */,
-				C8DE248D2DB4A17600ED8EC6 /* CoreDataManager.m */,
 			);
 			path = Model;
 			sourceTree = "<group>";
@@ -149,6 +306,50 @@
 			path = Resources;
 			sourceTree = "<group>";
 		};
+		C8E94DD72E73BE20002F52EF /* Products */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		C8F9E2002E55AC34001578D6 /* Tool */ = {
+			isa = PBXGroup;
+			children = (
+				C8C7E98D2E76B38100923F4E /* MessageContentUtils.h */,
+				C8C7E98E2E76B38100923F4E /* MessageContentUtils.m */,
+				C8C7E98B2E765ACA00923F4E /* MarkdownParserBridge.swift */,
+				C8C7E9892E765AC300923F4E /* CodeHighlighterBridge.swift */,
+				C8F9E22A2E5C6381001578D6 /* OSSUploadManager.h */,
+				C8F9E22B2E5C6381001578D6 /* OSSUploadManager.m */,
+				C8F9E1FC2E55AC34001578D6 /* AlertHelper.h */,
+				C8F9E1FD2E55AC34001578D6 /* AlertHelper.m */,
+				C8F9E1FE2E55AC34001578D6 /* MediaPickerManager.h */,
+				C8F9E1FF2E55AC34001578D6 /* MediaPickerManager.m */,
+				C8E644AB2E69134300FF16A9 /* SemanticBlockParser.m */,
+				C8E644AA2E69134300FF16A9 /* SemanticBlockParser.h */,
+				C8F9E1D92E55A75D001578D6 /* AIMarkdownParser.h */,
+				C8F9E1DA2E55A75D001578D6 /* AIMarkdownParser.m */,
+				C8F9E1DB2E55A75D001578D6 /* AISyntaxHighlighter.h */,
+				C8F9E1DC2E55A75D001578D6 /* AISyntaxHighlighter.m */,
+				C8DE247F2DB4A17600ED8EC6 /* APIManager.h */,
+				C8DE24802DB4A17600ED8EC6 /* APIManager.m */,
+				C8C7E9882E75A6A900923F4E /* normalMessageModel */,
+				C8DE248C2DB4A17600ED8EC6 /* CoreDataManager.h */,
+				C8DE248D2DB4A17600ED8EC6 /* CoreDataManager.m */,
+			);
+			path = Tool;
+			sourceTree = "<group>";
+		};
+		F8E7B8FDD1B2D4397A10DC6D /* Pods */ = {
+			isa = PBXGroup;
+			children = (
+				2DFF72DF3604AD2E549F230C /* Pods-ChatGPT-OC-Clone.debug.xcconfig */,
+				1B2F8DA4A1CEA973CF912D96 /* Pods-ChatGPT-OC-Clone.release.xcconfig */,
+			);
+			path = Pods;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -156,17 +357,17 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = C81D8B892DB13958007B8C81 /* Build configuration list for PBXNativeTarget "ChatGPT-OC-Clone" */;
 			buildPhases = (
+				93A4DCC1CD8BBF500B54816F /* [CP] Check Pods Manifest.lock */,
 				C81D8B6A2DB13956007B8C81 /* Sources */,
 				C81D8B6B2DB13956007B8C81 /* Frameworks */,
 				C81D8B6C2DB13956007B8C81 /* Resources */,
+				FCBCB317525F67EF72B3840D /* [CP] Embed Pods Frameworks */,
 			);
 			buildRules = (
 			);
 			dependencies = (
 			);
 			name = "ChatGPT-OC-Clone";
-			packageProductDependencies = (
-			);
 			productName = chatgpttest2;
 			productReference = C8DE24502DB4A01500ED8EC6 /* ChatGPT-OC-Clone.app */;
 			productType = "com.apple.product-type.application";
@@ -182,6 +383,7 @@
 				TargetAttributes = {
 					C81D8B6D2DB13956007B8C81 = {
 						CreatedOnToolsVersion = 16.3;
+						LastSwiftMigration = 1640;
 					};
 				};
 			};
@@ -194,9 +396,18 @@
 			);
 			mainGroup = C81D8B652DB13956007B8C81;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				C8F9E2052E55C7A3001578D6 /* XCRemoteSwiftPackageReference "Highlightr" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = C81D8B652DB13956007B8C81;
 			projectDirPath = "";
+			projectReferences = (
+				{
+					ProductGroup = C8E94DD72E73BE20002F52EF /* Products */;
+					ProjectRef = C8E94DBC2E73B753002F52EF /* ChatGPT-OC-Clone.xcodeproj */;
+				},
+			);
 			projectRoot = "";
 			targets = (
 				C81D8B6D2DB13956007B8C81 /* ChatGPT-OC-Clone */,
@@ -211,6 +422,7 @@
 			files = (
 				C8DE249D2DB4A17600ED8EC6 /* Assets.xcassets in Resources */,
 				C8DE249E2DB4A17600ED8EC6 /* context.md in Resources */,
+				C8F9E2292E5C46D4001578D6 /* GoogleService-Info.plist in Resources */,
 				C8DE249F2DB4A17600ED8EC6 /* index.html in Resources */,
 				C8DE24A12DB4A17600ED8EC6 /* LaunchScreen.storyboard in Resources */,
 			);
@@ -218,23 +430,92 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		93A4DCC1CD8BBF500B54816F /* [CP] Check Pods Manifest.lock */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"${PODS_PODFILE_DIR_PATH}/Podfile.lock",
+				"${PODS_ROOT}/Manifest.lock",
+			);
+			name = "[CP] Check Pods Manifest.lock";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(DERIVED_FILE_DIR)/Pods-ChatGPT-OC-Clone-checkManifestLockResult.txt",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
+			showEnvVarsInLog = 0;
+		};
+		FCBCB317525F67EF72B3840D /* [CP] Embed Pods Frameworks */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+				"${PODS_ROOT}/Target Support Files/Pods-ChatGPT-OC-Clone/Pods-ChatGPT-OC-Clone-frameworks-${CONFIGURATION}-input-files.xcfilelist",
+			);
+			inputPaths = (
+			);
+			name = "[CP] Embed Pods Frameworks";
+			outputFileListPaths = (
+				"${PODS_ROOT}/Target Support Files/Pods-ChatGPT-OC-Clone/Pods-ChatGPT-OC-Clone-frameworks-${CONFIGURATION}-output-files.xcfilelist",
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-ChatGPT-OC-Clone/Pods-ChatGPT-OC-Clone-frameworks.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		C81D8B6A2DB13956007B8C81 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C8F9E1DD2E55A75D001578D6 /* AISyntaxHighlighter.m in Sources */,
+				C8E644AD2E69134300FF16A9 /* SemanticBlockParser.m in Sources */,
+				C8F9E1DE2E55A75D001578D6 /* AIMarkdownParser.m in Sources */,
 				C8DE24A22DB4A17600ED8EC6 /* APIManager.m in Sources */,
+				C8C7E98C2E765ACA00923F4E /* MarkdownParserBridge.swift in Sources */,
 				C8DE24A32DB4A17600ED8EC6 /* AppDelegate.m in Sources */,
 				C8DE24A42DB4A17600ED8EC6 /* ChatCell.m in Sources */,
+				C8F9E22C2E5C6381001578D6 /* OSSUploadManager.m in Sources */,
 				C8DE24A52DB4A17600ED8EC6 /* ChatDetailViewController.m in Sources */,
+				C8F9E1F02E55A774001578D6 /* RichMessageCellNode.m in Sources */,
+				C8C7E98A2E765AC300923F4E /* CodeHighlighterBridge.swift in Sources */,
+				C8F9E1F12E55A774001578D6 /* AttachmentThumbnailView.m in Sources */,
+				C8F9E1F22E55A774001578D6 /* AICodeBlockNode.m in Sources */,
+				C8F9E1F42E55A774001578D6 /* ChatSwiftUIView.swift in Sources */,
+				C8F9E1FB2E55A789001578D6 /* ChatDetailViewControllerV2.m in Sources */,
+				C8C7E98F2E76B38100923F4E /* MessageContentUtils.m in Sources */,
+				C8F9E1F52E55A774001578D6 /* CodeBlockView.m in Sources */,
+				C8F9E1F62E55A774001578D6 /* ThinkingNode.m in Sources */,
+				C8E6457B2E6FB2B100FF16A9 /* AttachmentScrollNode.m in Sources */,
+				C8F9E2012E55AC34001578D6 /* MediaPickerManager.m in Sources */,
+				C8F9E2022E55AC34001578D6 /* AlertHelper.m in Sources */,
+				C8F9E1F72E55A774001578D6 /* CustomMenuView.m in Sources */,
 				C8DE24A62DB4A17600ED8EC6 /* chatgpttest2.xcdatamodeld in Sources */,
 				C8DE24A72DB4A17600ED8EC6 /* ChatsViewController.m in Sources */,
 				C8DE24A82DB4A17600ED8EC6 /* CoreDataManager.m in Sources */,
 				C8DE24A92DB4A17600ED8EC6 /* main.m in Sources */,
 				C8DE24AA2DB4A17600ED8EC6 /* MainViewController.m in Sources */,
 				C8DE24AB2DB4A17600ED8EC6 /* MessageCell.m in Sources */,
+				C8F9E1D72E55A755001578D6 /* ParserResult.m in Sources */,
+				C8F9E1D82E55A755001578D6 /* ResponseParsingTask.m in Sources */,
 				C8DE24AC2DB4A17600ED8EC6 /* SceneDelegate.m in Sources */,
 				C8DE24AD2DB4A17600ED8EC6 /* ThinkingView.m in Sources */,
+				C8F9E2362E5DA02C001578D6 /* ImagePreviewOverlay.m in Sources */,
+				C8F9E23B2E5DCE34001578D6 /* MediaMessageCellNode.m in Sources */,
+				C8F9E23C2E5DCE34001578D6 /* MessageCellNode.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -254,14 +535,42 @@
 /* Begin XCBuildConfiguration section */
 		C81D8B8A2DB13958007B8C81 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 2DFF72DF3604AD2E549F230C /* Pods-ChatGPT-OC-Clone.debug.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEFINES_MODULE = YES;
 				DEVELOPMENT_TEAM = 2Z37U2K3WX;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				EXCLUDED_ARCHS = "";
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"\"${PODS_CONFIGURATION_BUILD_DIR}/AliyunOSSiOS\"",
+					"\"${PODS_CONFIGURATION_BUILD_DIR}/Down\"",
+					"\"${PODS_CONFIGURATION_BUILD_DIR}/PINCache\"",
+					"\"${PODS_CONFIGURATION_BUILD_DIR}/PINOperation\"",
+					"\"${PODS_CONFIGURATION_BUILD_DIR}/PINRemoteImage\"",
+					"\"${PODS_CONFIGURATION_BUILD_DIR}/Texture\"",
+					"$(PROJECT_DIR)/ChatGPT-OC-Clone/QCloudCOSXML-6.5.1",
+				);
 				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"\"${PODS_CONFIGURATION_BUILD_DIR}/Down/Down.framework/Headers\"",
+					"\"${PODS_CONFIGURATION_BUILD_DIR}/PINCache/PINCache.framework/Headers\"",
+					"\"${PODS_CONFIGURATION_BUILD_DIR}/PINOperation/PINOperation.framework/Headers\"",
+					"\"${PODS_CONFIGURATION_BUILD_DIR}/PINRemoteImage/PINRemoteImage.framework/Headers\"",
+					"\"${PODS_CONFIGURATION_BUILD_DIR}/Texture/AsyncDisplayKit.framework/Headers\"",
+					"\"$(PODS_ROOT)/Down/Sources/cmark/include\"",
+					"\"$(PODS_ROOT)/Down/Sources/cmark\"",
+					"\"$(PODS_ROOT)/Headers/Public\"",
+					"\"$(PODS_ROOT)/Headers/Private\"",
+				);
 				INFOPLIST_FILE = "ChatGPT-OC-Clone/Info.plist";
+				INFOPLIST_KEY_NSCameraUsageDescription = "需要使用摄像头进行拍摄图片";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
@@ -278,20 +587,51 @@
 				SUPPORTS_MACCATALYST = NO;
 				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "ChatGPT-OC-Clone/View/ChatGPT-OC-Clone-Bridging-Header.h";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
 		};
 		C81D8B8B2DB13958007B8C81 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 1B2F8DA4A1CEA973CF912D96 /* Pods-ChatGPT-OC-Clone.release.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEFINES_MODULE = YES;
 				DEVELOPMENT_TEAM = 2Z37U2K3WX;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				EXCLUDED_ARCHS = "";
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"\"${PODS_CONFIGURATION_BUILD_DIR}/AliyunOSSiOS\"",
+					"\"${PODS_CONFIGURATION_BUILD_DIR}/Down\"",
+					"\"${PODS_CONFIGURATION_BUILD_DIR}/PINCache\"",
+					"\"${PODS_CONFIGURATION_BUILD_DIR}/PINOperation\"",
+					"\"${PODS_CONFIGURATION_BUILD_DIR}/PINRemoteImage\"",
+					"\"${PODS_CONFIGURATION_BUILD_DIR}/Texture\"",
+					"$(PROJECT_DIR)/ChatGPT-OC-Clone/QCloudCOSXML-6.5.1",
+				);
 				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"\"${PODS_CONFIGURATION_BUILD_DIR}/Down/Down.framework/Headers\"",
+					"\"${PODS_CONFIGURATION_BUILD_DIR}/PINCache/PINCache.framework/Headers\"",
+					"\"${PODS_CONFIGURATION_BUILD_DIR}/PINOperation/PINOperation.framework/Headers\"",
+					"\"${PODS_CONFIGURATION_BUILD_DIR}/PINRemoteImage/PINRemoteImage.framework/Headers\"",
+					"\"${PODS_CONFIGURATION_BUILD_DIR}/Texture/AsyncDisplayKit.framework/Headers\"",
+					"\"$(PODS_ROOT)/Down/Sources/cmark/include\"",
+					"\"$(PODS_ROOT)/Down/Sources/cmark\"",
+					"\"$(PODS_ROOT)/Headers/Public\"",
+					"\"$(PODS_ROOT)/Headers/Private\"",
+				);
 				INFOPLIST_FILE = "ChatGPT-OC-Clone/Info.plist";
+				INFOPLIST_KEY_NSCameraUsageDescription = "需要使用摄像头进行拍摄图片";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchStoryboardName = LaunchScreen;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
@@ -308,6 +648,8 @@
 				SUPPORTS_MACCATALYST = NO;
 				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "ChatGPT-OC-Clone/View/ChatGPT-OC-Clone-Bridging-Header.h";
+				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
@@ -452,6 +794,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		C8F9E2052E55C7A3001578D6 /* XCRemoteSwiftPackageReference "Highlightr" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/raspu/Highlightr/";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.3.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		C8F9E2062E55C7A3001578D6 /* Highlightr */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C8F9E2052E55C7A3001578D6 /* XCRemoteSwiftPackageReference "Highlightr" */;
+			productName = Highlightr;
+		};
+/* End XCSwiftPackageProductDependency section */
 
 /* Begin XCVersionGroup section */
 		C8DE24882DB4A17600ED8EC6 /* chatgpttest2.xcdatamodeld */ = {

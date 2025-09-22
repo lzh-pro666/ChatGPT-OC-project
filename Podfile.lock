@@ -1,0 +1,72 @@
+PODS:
+  - AliyunOSSiOS (2.11.1)
+  - Down (0.11.0)
+  - PINCache (3.0.4):
+    - PINCache/Arc-exception-safe (= 3.0.4)
+    - PINCache/Core (= 3.0.4)
+  - PINCache/Arc-exception-safe (3.0.4):
+    - PINCache/Core
+  - PINCache/Core (3.0.4):
+    - PINOperation (~> 1.2.3)
+  - PINOperation (1.2.3)
+  - PINRemoteImage/Core (3.0.4):
+    - PINOperation
+  - PINRemoteImage/iOS (3.0.4):
+    - PINRemoteImage/Core
+  - PINRemoteImage/PINCache (3.0.4):
+    - PINCache (~> 3.0.4)
+    - PINRemoteImage/Core
+  - QCloudCore/WithoutMTA (6.5.1)
+  - QCloudCOSXML/Slim (6.5.1):
+    - QCloudCore/WithoutMTA (= 6.5.1)
+  - Texture (3.2.0):
+    - Texture/AssetsLibrary (= 3.2.0)
+    - Texture/Core (= 3.2.0)
+    - Texture/MapKit (= 3.2.0)
+    - Texture/Photos (= 3.2.0)
+    - Texture/PINRemoteImage (= 3.2.0)
+    - Texture/Video (= 3.2.0)
+  - Texture/AssetsLibrary (3.2.0):
+    - Texture/Core
+  - Texture/Core (3.2.0)
+  - Texture/MapKit (3.2.0):
+    - Texture/Core
+  - Texture/Photos (3.2.0):
+    - Texture/Core
+  - Texture/PINRemoteImage (3.2.0):
+    - PINRemoteImage/iOS (~> 3.0.0)
+    - PINRemoteImage/PINCache
+    - Texture/Core
+  - Texture/Video (3.2.0):
+    - Texture/Core
+
+DEPENDENCIES:
+  - AliyunOSSiOS
+  - Down
+  - QCloudCOSXML/Slim
+  - Texture
+
+SPEC REPOS:
+  https://mirrors.tuna.tsinghua.edu.cn/git/CocoaPods/Specs.git:
+    - AliyunOSSiOS
+    - Down
+    - PINCache
+    - PINOperation
+    - PINRemoteImage
+    - QCloudCore
+    - QCloudCOSXML
+    - Texture
+
+SPEC CHECKSUMS:
+  AliyunOSSiOS: 51e8aa24dda25918e3b5b80d72105a57485b6bf7
+  Down: b6ba1bc985c9d2f4e15e3b293d2207766fa12612
+  PINCache: d9a87a0ff397acffe9e2f0db972ac14680441158
+  PINOperation: fb563bcc9c32c26d6c78aaff967d405aa2ee74a7
+  PINRemoteImage: 6256a644f4996991f124811763c7286b2a63ff94
+  QCloudCore: 6f8c67b96448472d2c6a92b9cfe1bdb5abbb1798
+  QCloudCOSXML: 92f50a787b4e8d9a7cb6ea8e626775256b4840a7
+  Texture: 61e86ea2ee124f545be40293b54b5b8986006da2
+
+PODFILE CHECKSUM: 396d306e0cd7bbcea560bc3b30db2d4f2f193613
+
+COCOAPODS: 1.16.2

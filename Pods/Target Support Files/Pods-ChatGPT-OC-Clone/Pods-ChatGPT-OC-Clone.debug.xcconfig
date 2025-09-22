@@ -1,0 +1,17 @@
+ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES
+CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = NO
+EXCLUDED_ARCHS[sdk=iphonesimulator*] = arm64
+FRAMEWORK_SEARCH_PATHS = $(inherited) "${PODS_CONFIGURATION_BUILD_DIR}/AliyunOSSiOS" "${PODS_CONFIGURATION_BUILD_DIR}/Down" "${PODS_CONFIGURATION_BUILD_DIR}/PINCache" "${PODS_CONFIGURATION_BUILD_DIR}/PINOperation" "${PODS_CONFIGURATION_BUILD_DIR}/PINRemoteImage" "${PODS_CONFIGURATION_BUILD_DIR}/QCloudCOSXML" "${PODS_CONFIGURATION_BUILD_DIR}/QCloudCore" "${PODS_CONFIGURATION_BUILD_DIR}/Texture"
+GCC_PREPROCESSOR_DEFINITIONS = $(inherited) COCOAPODS=1 $(inherited) PIN_WEBP=1 $(inherited) AS_USE_ASSETS_LIBRARY=1 $(inherited) AS_USE_MAPKIT=1 $(inherited) AS_USE_PHOTOS=1 $(inherited) AS_USE_VIDEO=1
+HEADER_SEARCH_PATHS = $(inherited) "${PODS_CONFIGURATION_BUILD_DIR}/AliyunOSSiOS/AliyunOSSiOS.framework/Headers" "${PODS_CONFIGURATION_BUILD_DIR}/Down/Down.framework/Headers" "${PODS_CONFIGURATION_BUILD_DIR}/PINCache/PINCache.framework/Headers" "${PODS_CONFIGURATION_BUILD_DIR}/PINOperation/PINOperation.framework/Headers" "${PODS_CONFIGURATION_BUILD_DIR}/PINRemoteImage/PINRemoteImage.framework/Headers" "${PODS_CONFIGURATION_BUILD_DIR}/QCloudCOSXML/QCloudCOSXML.framework/Headers" "${PODS_CONFIGURATION_BUILD_DIR}/QCloudCore/QCloudCore.framework/Headers" "${PODS_CONFIGURATION_BUILD_DIR}/Texture/AsyncDisplayKit.framework/Headers"
+LD_RUNPATH_SEARCH_PATHS = $(inherited) /usr/lib/swift '@executable_path/Frameworks' '@loader_path/Frameworks'
+LIBRARY_SEARCH_PATHS = $(inherited) "${TOOLCHAIN_DIR}/usr/lib/swift/${PLATFORM_NAME}" /usr/lib/swift
+OTHER_LDFLAGS = $(inherited) -ObjC -l"c++" -l"resolv" -l"z" -framework "AVFoundation" -framework "Accelerate" -framework "AliyunOSSiOS" -framework "AssetsLibrary" -framework "AsyncDisplayKit" -framework "CoreLocation" -framework "CoreMedia" -framework "CoreTelephony" -framework "Down" -framework "Foundation" -framework "ImageIO" -framework "MapKit" -framework "PINCache" -framework "PINOperation" -framework "PINRemoteImage" -framework "Photos" -framework "QCloudCOSXML" -framework "QCloudCore" -framework "SystemConfiguration" -framework "UIKit" -weak_framework "UIKit"
+OTHER_MODULE_VERIFIER_FLAGS = $(inherited) "-F${PODS_CONFIGURATION_BUILD_DIR}/AliyunOSSiOS" "-F${PODS_CONFIGURATION_BUILD_DIR}/Down" "-F${PODS_CONFIGURATION_BUILD_DIR}/PINCache" "-F${PODS_CONFIGURATION_BUILD_DIR}/PINOperation" "-F${PODS_CONFIGURATION_BUILD_DIR}/PINRemoteImage" "-F${PODS_CONFIGURATION_BUILD_DIR}/QCloudCOSXML" "-F${PODS_CONFIGURATION_BUILD_DIR}/QCloudCore" "-F${PODS_CONFIGURATION_BUILD_DIR}/Texture"
+OTHER_SWIFT_FLAGS = $(inherited) -D COCOAPODS
+PODS_BUILD_DIR = ${BUILD_DIR}
+PODS_CONFIGURATION_BUILD_DIR = ${PODS_BUILD_DIR}/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)
+PODS_PODFILE_DIR_PATH = ${SRCROOT}/.
+PODS_ROOT = ${SRCROOT}/Pods
+PODS_XCFRAMEWORKS_BUILD_DIR = $(PODS_CONFIGURATION_BUILD_DIR)/XCFrameworkIntermediates
+USE_RECURSIVE_SCRIPT_INPUTS_IN_SCRIPT_PHASES = YES

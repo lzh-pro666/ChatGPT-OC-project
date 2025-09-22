@@ -2,6 +2,7 @@
 #import "ChatCell.h"
 #import "CoreDataManager.h"
 #import "ChatDetailViewController.h"
+#import "AlertHelper.h"
 @import CoreData;
 
 @interface ChatsViewController () <UITableViewDelegate, UITableViewDataSource>
@@ -29,7 +30,7 @@
 - (void)setupViews {
     self.view.backgroundColor = [UIColor whiteColor];
     
-    // 标题视图
+    // 头部视图
     UIView *headerView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, self.view.bounds.size.width, 80)];
     
     UILabel *titleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
@@ -48,7 +49,7 @@
     self.addChatButton.layer.cornerRadius = 16;
     [self.addChatButton addTarget:self action:@selector(createNewChat) forControlEvents:UIControlEventTouchUpInside];
     
-    // 添加"+"图标
+    // 添加“+”图标
     UIImageView *plusIcon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"plus"]];
     plusIcon.tintColor = [UIColor blackColor];
     plusIcon.contentMode = UIViewContentModeScaleAspectFit;
@@ -73,7 +74,7 @@
         [plusIcon.heightAnchor constraintEqualToConstant:16]
     ]];
     
-    // 表格视图
+    // 列表视图
     self.tableView = [[UITableView alloc] initWithFrame:CGRectZero style:UITableViewStylePlain];
     self.tableView.delegate = self;
     self.tableView.dataSource = self;
@@ -157,68 +158,42 @@
         NSIndexPath *indexPath = [self.tableView indexPathForRowAtPoint:point];
         
         if (indexPath) {
-            // 设置选中行以便删除操作知道要删除哪个聊天
+            // 选中行，便于后续删除操作确定目标
             [self.tableView selectRowAtIndexPath:indexPath animated:NO scrollPosition:UITableViewScrollPositionNone];
             
-            // 创建弹出菜单而不是使用UIMenuController (适用于iOS 13+)
-            UIAlertController *alertController = [UIAlertController alertControllerWithTitle:nil
-                                                                                    message:nil
-                                                                             preferredStyle:UIAlertControllerStyleActionSheet];
-            
-            UIAlertAction *deleteAction = [UIAlertAction actionWithTitle:@"删除"
-                                                                   style:UIAlertActionStyleDestructive
-                                                                 handler:^(UIAlertAction * _Nonnull action) {
-                [self deleteChat:nil];
-            }];
-            
-            UIAlertAction *cancelAction = [UIAlertAction actionWithTitle:@"取消"
-                                                                   style:UIAlertActionStyleCancel
-                                                                 handler:nil];
-            
-            [alertController addAction:deleteAction];
-            [alertController addAction:cancelAction];
-
-            [self presentViewController:alertController animated:YES completion:nil];
+            // 使用 AlertHelper 显示聊天操作菜单
+            NSArray *actions = @[
+                @{@"重命名": ^{
+                    [self renameChatAtIndexPath:indexPath];
+                }},
+                @{@"删除": ^{
+                    [self deleteChat:nil];
+                }}
+            ];
+            [AlertHelper showActionMenuOn:self title:nil actions:actions cancelTitle:@"取消"];
         }
     }
 }
 
 - (void)handleSwipe:(UISwipeGestureRecognizer *)gestureRecognizer {
     if (gestureRecognizer.direction == UISwipeGestureRecognizerDirectionLeft) {
-        // 模拟点击了导航栏的返回按钮
+        // 模拟返回
         [self.navigationController popViewControllerAnimated:YES];
     }
 }
 
-- (BOOL)canBecomeFirstResponder {
-    return YES; // 允许视图成为第一响应者，以便显示菜单
-}
-
-- (BOOL)canPerformAction:(SEL)action withSender:(id)sender {
-    // 只允许执行deleteChat:方法
-    if (action == @selector(deleteChat:)) {
-        return YES;
-    }
-    return NO;
-}
-
+// 删除聊天
 - (void)deleteChat:(id)sender {
     NSIndexPath *indexPath = [self.tableView indexPathForSelectedRow];
     if (indexPath) {
         NSManagedObject *chatToDelete = self.chatList[indexPath.row];
         
-        // 显示确认对话框
-        UIAlertController *alertController = [UIAlertController alertControllerWithTitle:@"确认删除"
-                                                                                message:@"确定要删除这个聊天吗？此操作不可撤销。"
-                                                                         preferredStyle:UIAlertControllerStyleAlert];
-        
-        UIAlertAction *cancelAction = [UIAlertAction actionWithTitle:@"取消"
-                                                              style:UIAlertActionStyleCancel
-                                                            handler:nil];
-        
-        UIAlertAction *deleteAction = [UIAlertAction actionWithTitle:@"删除"
-                                                             style:UIAlertActionStyleDestructive
-                                                           handler:^(UIAlertAction * _Nonnull action) {
+        // 使用 AlertHelper 显示确认删除对话框
+        [AlertHelper showConfirmationAlertOn:self
+                                   withTitle:@"确认删除"
+                                     message:@"确定要删除这个聊天吗？此操作不可撤销。"
+                                confirmTitle:@"删除"
+                         confirmationHandler:^{
             // 删除聊天
             [[CoreDataManager sharedManager].managedObjectContext deleteObject:chatToDelete];
             [[CoreDataManager sharedManager] saveContext];
@@ -229,17 +204,48 @@
             // 更新UI
             [self.tableView reloadData];
             
-            // 如果删除后没有聊天了，自动创建一个新聊天
+            // 如果删除后没有聊天，自动创建一个新聊天
             if (self.chatList.count == 0) {
                 [self createNewChat];
             }
         }];
-        
-        [alertController addAction:cancelAction];
-        [alertController addAction:deleteAction];
-        
-        [self presentViewController:alertController animated:YES completion:nil];
     }
+}
+
+// 重命名聊天
+- (void)renameChatAtIndexPath:(NSIndexPath *)indexPath {
+    if (!indexPath || indexPath.row >= self.chatList.count) { return; }
+    NSManagedObject *chat = self.chatList[indexPath.row];
+    NSString *currentTitle = [chat valueForKey:@"title"] ?: @"";
+    
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"重命名聊天"
+                                                                   message:@"请输入新的标题"
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    
+    [alert addTextFieldWithConfigurationHandler:^(UITextField * _Nonnull textField) {
+        textField.text = currentTitle;
+        textField.placeholder = @"聊天标题";
+        textField.clearButtonMode = UITextFieldViewModeWhileEditing;
+        textField.returnKeyType = UIReturnKeyDone;
+    }];
+    
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"保存" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+        __strong typeof(weakSelf) self = weakSelf;
+        NSString *newTitle = [[alert.textFields.firstObject.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] copy];
+        if (newTitle.length == 0) {
+            [AlertHelper showAlertOn:self withTitle:@"无效标题" message:@"标题不能为空。" buttonTitle:@"确定"];
+            return;
+        }
+        [chat setValue:newTitle forKey:@"title"];
+        [[CoreDataManager sharedManager] saveContext];
+        
+        // 仅刷新该行，避免整表刷新带来的打断
+        [self.tableView reloadRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationAutomatic];
+    }]];
+    
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)viewWillDisappear:(BOOL)animated {
@@ -255,4 +261,4 @@
     }
 }
 
-@end 
+@end
