@@ -10,22 +10,39 @@
 #import <AsyncDisplayKit/ASButtonNode.h>
 #import <AsyncDisplayKit/ASScrollNode.h>
 #import <UIKit/UIKit.h>
+#import <QuartzCore/QuartzCore.h>
+#import <AsyncDisplayKit/ASTextNode2.h>
 
 @interface AICodeBlockNode () <UIGestureRecognizerDelegate>
 @property (nonatomic, copy) NSString *code;
 @property (nonatomic, copy) NSString *language;
 @property (nonatomic, assign) BOOL isFromUser;
 @property (nonatomic, strong) AISyntaxHighlighter *highlighter;
-@property (nonatomic, strong) ASDisplayNode *header;
-@property (nonatomic, strong) ASTextNode *langNode;
+@property (nonatomic, strong) ASTextNode2 *langNode;
 @property (nonatomic, strong) ASButtonNode *duplicateButton;
-@property (nonatomic, strong) ASTextNode *codeNode;
-@property (nonatomic, strong) ASScrollNode *scrollNode; // 新增：横向滚动容器
+@property (nonatomic, strong) ASTextNode2 *codeNode;
+@property (nonatomic, strong) ASScrollNode *scrollNode; // 横向滚动容器（按需创建）
+// 流式渲染：逐行节点与状态
+@property (nonatomic, assign) BOOL isStreaming;
+@property (nonatomic, strong) NSMutableArray<ASTextNode2 *> *lineNodes;
+@property (nonatomic, strong) NSMutableString *streamAccumulatedPlain;
+@property (nonatomic, assign) NSTimeInterval codeLineRevealDuration;
+// 帧级合并：布局与动画
+@property (nonatomic, assign) BOOL layoutCoalesceScheduled;
+@property (nonatomic, strong) NSMutableArray<NSDictionary *> *pendingRevealTasks; // { node: ASDisplayNode, completion: block }
+@property (nonatomic, assign) BOOL revealBatchScheduled;
+@property (nonatomic, assign) NSInteger runningRevealAnimations;
+@property (nonatomic, assign) BOOL pendingFinalizeAfterReveal;
+// Header 尺寸缓存，避免重复参与测量（保留标签与复制按钮尺寸）
+@property (nonatomic, assign) BOOL headerSizePrepared;
+@property (nonatomic, assign) CGSize langPreferredSize;
+@property (nonatomic, assign) CGSize duplicatePreferredSize;
 // 更新合并与增量应用
 @property (nonatomic, assign) BOOL pendingTextApplyScheduled;
 @property (nonatomic, strong) NSAttributedString *pendingAttr;   // 待应用文本
 @property (nonatomic, assign) BOOL pendingIsAppend;               // 是否为仅追加
 @property (nonatomic, strong) NSMutableAttributedString *appliedAttr; // 已应用缓存
+@property (nonatomic) dispatch_queue_t lineHighlightQueue; // 逐行高亮串行队列
 @end
 
 @implementation AICodeBlockNode
@@ -33,11 +50,47 @@
     CGFloat _fixedContentWidth;
     CGFloat _cachedMaxLineWidth;
     BOOL _hasCachedMaxLineWidth;
-    CGFloat _cachedHeightForWidth;
-    CGFloat _cachedWidthForHeight;
-    BOOL _hasCachedHeight;
+    // 移除未使用的高度缓存字段
     BOOL _heightLocked;
     CGFloat _lockedHeight;
+    // 记录最近一次应用到 scrollNode 的内容高度，避免重复样式写入
+    CGFloat _appliedScrollHeight;
+}
+
+// 非流式初始化时：若已有完整代码，立即生成高亮并准备内容宽度
+- (void)applyInitialCodeIfAny {
+    NSString *full = [self.streamAccumulatedPlain copy] ?: @"";
+    if (full.length == 0) { return; }
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        __strong typeof(weakSelf) strongSelf = weakSelf; if (!strongSelf) return;
+        NSAttributedString *highlighted = [strongSelf.highlighter highlightCode:full language:strongSelf.language fontSize:14];
+        NSMutableAttributedString *mutable = highlighted ? [[NSMutableAttributedString alloc] initWithAttributedString:highlighted] : [[NSMutableAttributedString alloc] initWithString:full attributes:@{ NSFontAttributeName: [UIFont monospacedSystemFontOfSize:14 weight:UIFontWeightRegular], NSForegroundColorAttributeName: strongSelf.highlighter.theme.text }];
+        NSMutableParagraphStyle *ps = [[NSMutableParagraphStyle alloc] init]; ps.lineBreakMode = NSLineBreakByClipping; ps.lineSpacing = 2; [mutable addAttribute:NSParagraphStyleAttributeName value:ps range:NSMakeRange(0, mutable.length)];
+        // 计算最长行
+        CGFloat maxLineWidth = 0.0; UIFont *mono = [UIFont monospacedSystemFontOfSize:14 weight:UIFontWeightRegular];
+        for (NSString *ln in [full componentsSeparatedByString:@"\n"]) {
+            if (ln.length == 0) continue;
+            CGSize s = [ln boundingRectWithSize:CGSizeMake(CGFLOAT_MAX, CGFLOAT_MAX)
+                                       options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
+                                    attributes:@{ NSFontAttributeName: mono }
+                                       context:nil].size;
+            if (s.width > maxLineWidth) maxLineWidth = s.width;
+        }
+        CGFloat contentWidth = (strongSelf->_fixedContentWidth > 1.0) ? ceil(strongSelf->_fixedContentWidth) : ((maxLineWidth > 0.0) ? (ceil(maxLineWidth) + 4.0) : 1.0);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong typeof(weakSelf) self2 = weakSelf; if (!self2) return;
+            self2.code = full;
+            self2.appliedAttr = [mutable mutableCopy];
+            self2.codeNode.attributedText = [mutable copy];
+            self2->_cachedMaxLineWidth = contentWidth; self2->_hasCachedMaxLineWidth = YES;
+            self2->_codeNode.style.minWidth = ASDimensionMakeWithPoints(contentWidth);
+            self2->_codeNode.style.maxWidth = ASDimensionMakeWithPoints(contentWidth);
+            self2->_codeNode.style.width = ASDimensionMakeWithPoints(contentWidth);
+            [self2 ensureScrollContainerExists];
+            [self2 setNeedsLayout];
+        });
+    });
 }
 
 - (instancetype)initWithCode:(NSString *)code 
@@ -61,7 +114,7 @@
         self.style.flexShrink = 1;
         
         // 语言标签
-        _langNode = [ASTextNode new];
+        _langNode = [ASTextNode2 new];
         _langNode.attributedText = [[NSAttributedString alloc] initWithString:_language.uppercaseString
             attributes:@{
                 NSFontAttributeName: [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold],
@@ -73,64 +126,65 @@
         [_duplicateButton setTitle:@"复制" withFont:[UIFont systemFontOfSize:12 weight:UIFontWeightSemibold] withColor:[UIColor labelColor] forState:UIControlStateNormal];
         [_duplicateButton addTarget:self action:@selector(onCopy) forControlEvents:ASControlNodeEventTouchUpInside];
         
-        // 头部容器
-        _header = [ASDisplayNode new];
-        _header.backgroundColor = [[UIColor secondarySystemBackgroundColor] colorWithAlphaComponent:0.7];
+        // 移除未使用的 header 容器
         
         // 代码文本节点
-        _codeNode = [ASTextNode new];
+        _codeNode = [ASTextNode2 new];
         _codeNode.maximumNumberOfLines = 0;
         _codeNode.truncationMode = NSLineBreakByClipping; // 不换行，超过宽度时裁剪
         _codeNode.style.flexGrow = 0;
         _codeNode.style.flexShrink = 0;
         _codeNode.layerBacked = YES; // 降低 UIView 创建
         
-        // 应用语法高亮并强制段落样式为不换行
-        NSAttributedString *highlightedCode = [_highlighter highlightCode:_code language:_language fontSize:14];
-        NSMutableAttributedString *mutable = nil;
-        if (highlightedCode && highlightedCode.length > 0) {
-            mutable = [[NSMutableAttributedString alloc] initWithAttributedString:highlightedCode];
-        } else {
-            NSString *raw = _code ?: @"";
-            mutable = [[NSMutableAttributedString alloc] initWithString:raw attributes:@{
-                NSFontAttributeName: [UIFont monospacedSystemFontOfSize:14 weight:UIFontWeightRegular],
-                NSForegroundColorAttributeName: _highlighter.theme.text
-            }];
-        }
-        NSMutableParagraphStyle *ps = [[NSMutableParagraphStyle alloc] init];
-        ps.lineBreakMode = NSLineBreakByClipping; // 禁止自动换行
-        ps.lineSpacing = 2;
-        [mutable addAttribute:NSParagraphStyleAttributeName value:ps range:NSMakeRange(0, mutable.length)];
-        _codeNode.attributedText = [mutable copy];
-        self.appliedAttr = [mutable mutableCopy];
+        // 初始化流式相关状态（构造时不立即创建滚动容器，待 finalize）
+        self.appliedAttr = nil;
         self.pendingTextApplyScheduled = NO;
         self.pendingAttr = nil;
         self.pendingIsAppend = NO;
-        
-        // 依据最长行设置内容宽度，启用横向滚动
-        [self updateCodeContentWidth];
-        
-        // 横向滚动容器
-        _scrollNode = [[ASScrollNode alloc] init];
-        _scrollNode.automaticallyManagesSubnodes = NO;
-        _scrollNode.automaticallyManagesContentSize = NO;
-        _scrollNode.scrollableDirections = ASScrollDirectionHorizontalDirections;
-        _scrollNode.style.flexGrow = 1.0;
-        _scrollNode.style.flexShrink = 1.0;
-        _scrollNode.view.showsHorizontalScrollIndicator = YES;
-        _scrollNode.view.alwaysBounceHorizontal = YES;
-        _scrollNode.view.alwaysBounceVertical = NO;
-        _scrollNode.view.directionalLockEnabled = YES;
-        _scrollNode.view.delaysContentTouches = NO;
-        _scrollNode.view.canCancelContentTouches = YES;
-        _scrollNode.view.panGestureRecognizer.cancelsTouchesInView = NO;
-        // 手动管理子节点，直接将 codeNode 加入 scrollNode 作为内容视图
-        [_scrollNode addSubnode:_codeNode];
-        
-        // removed debug log
+        self.isStreaming = NO;
+        self.lineNodes = [NSMutableArray array];
+        self.streamAccumulatedPlain = [NSMutableString string];
+        self.codeLineRevealDuration = 0.5;
+        self.headerSizePrepared = NO;
+        self.layoutCoalesceScheduled = NO;
+        self.pendingRevealTasks = [NSMutableArray array];
+        self.revealBatchScheduled = NO;
+        if (_code.length > 0) { [self.streamAccumulatedPlain setString:_code]; }
+        // 非流式创建且已有完整代码时，立即应用一次完整高亮与宽度计算
+        if (_code.length > 0) {
+            [self applyInitialCodeIfAny];
+        }
+        _lineHighlightQueue = dispatch_queue_create("com.chat.codeLine.highlight", DISPATCH_QUEUE_SERIAL);
     }
     return self;
 }
+- (void)requestCoalescedLayout {
+    if (self.layoutCoalesceScheduled) { return; }
+    self.layoutCoalesceScheduled = YES;
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.016 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        __strong typeof(weakSelf) strongSelf = weakSelf; if (!strongSelf) return;
+        strongSelf.layoutCoalesceScheduled = NO;
+        [strongSelf setNeedsLayout];
+    });
+}
+
+- (void)_scheduleRevealBatchIfNeeded {
+    if (self.revealBatchScheduled) { return; }
+    self.revealBatchScheduled = YES;
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.016 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        __strong typeof(weakSelf) strongSelf = weakSelf; if (!strongSelf) return;
+        strongSelf.revealBatchScheduled = NO;
+        NSArray<NSDictionary *> *tasks = [strongSelf.pendingRevealTasks copy];
+        [strongSelf.pendingRevealTasks removeAllObjects];
+        for (NSDictionary *t in tasks) {
+            ASDisplayNode *node = t[@"node"]; dispatch_block_t completion = t[@"completion"]; if ((NSNull *)completion == (NSNull *)[NSNull null]) completion = nil;
+            [strongSelf _applyLeftToRightRevealMaskOnNode:node duration:strongSelf.codeLineRevealDuration tries:4 completion:completion];
+        }
+    });
+}
+
 
 // 新增：增量更新代码文本（追加优先）
 - (void)updateCodeText:(NSString *)code {
@@ -212,6 +266,122 @@
     });
 }
 
+// MARK: - 流式逐行 API
+
+- (void)appendCodeLine:(NSString *)line isFirst:(BOOL)isFirst completion:(void (^ _Nullable)(void))completion {
+    if (!line) { if (completion) completion(); return; }
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(self.lineHighlightQueue, ^{
+        __strong typeof(weakSelf) strongSelfBG = weakSelf; if (!strongSelfBG) { if (completion) completion(); return; }
+        NSAttributedString *hl = [strongSelfBG.highlighter highlightCode:line language:strongSelfBG.language fontSize:14] ?: [[NSAttributedString alloc] initWithString:line];
+        NSMutableAttributedString *mutable = [[NSMutableAttributedString alloc] initWithAttributedString:hl];
+        NSMutableParagraphStyle *ps = [[NSMutableParagraphStyle alloc] init];
+        ps.lineBreakMode = NSLineBreakByClipping; ps.lineSpacing = 2;
+        [mutable addAttribute:NSParagraphStyleAttributeName value:ps range:NSMakeRange(0, mutable.length)];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong typeof(weakSelf) strongSelf = weakSelf; if (!strongSelf) { if (completion) completion(); return; }
+            if (isFirst && !strongSelf.isStreaming) {
+                strongSelf.isStreaming = YES;
+                [strongSelf.lineNodes removeAllObjects];
+                [strongSelf.streamAccumulatedPlain setString:@""];
+            }
+            ASTextNode2 *lineNode = [[ASTextNode2 alloc] init];
+            lineNode.layerBacked = YES;
+            lineNode.maximumNumberOfLines = 1;
+            lineNode.truncationMode = NSLineBreakByClipping;
+            lineNode.attributedText = [mutable copy];
+            lineNode.style.flexGrow = 1.0;
+            lineNode.style.flexShrink = 1.0;
+            {
+                CGSize s = lineNode.bounds.size;
+                if (s.width < 1.0 || s.height < 1.0) { s = CGSizeMake(4096, 1024); }
+                CALayer *preMask = [CALayer layer];
+                preMask.backgroundColor = [UIColor blackColor].CGColor;
+                preMask.anchorPoint = CGPointMake(0.0, 0.5);
+                preMask.bounds = CGRectMake(0, 0, s.width, s.height);
+                preMask.position = CGPointMake(0, s.height * 0.5);
+                preMask.transform = CATransform3DMakeScale(0.0, 1.0, 1.0);
+                lineNode.layer.mask = preMask;
+            }
+            [strongSelf.lineNodes addObject:lineNode];
+            if (strongSelf.streamAccumulatedPlain.length > 0) { [strongSelf.streamAccumulatedPlain appendString:@"\n"]; }
+            [strongSelf.streamAccumulatedPlain appendString:(line ?: @"")];
+            [strongSelf requestCoalescedLayout];
+            strongSelf.runningRevealAnimations += 1;
+            dispatch_block_t userCompletion = completion ? [completion copy] : nil;
+            dispatch_block_t internal = ^{
+                __strong typeof(weakSelf) self3 = weakSelf; if (!self3) return;
+                self3.runningRevealAnimations = MAX(0, self3.runningRevealAnimations - 1);
+                if (self3.pendingFinalizeAfterReveal && self3.runningRevealAnimations == 0) {
+                    self3.pendingFinalizeAfterReveal = NO;
+                    [self3 finalizeStreaming];
+                }
+            };
+            dispatch_block_t chained = ^{
+                if (userCompletion) userCompletion();
+                internal();
+            };
+            [strongSelf.pendingRevealTasks addObject:@{ @"node": lineNode, @"completion": chained }];
+            [strongSelf _scheduleRevealBatchIfNeeded];
+        });
+    });
+}
+
+- (void)finalizeStreaming {
+    if (!self.isStreaming) { return; }
+    // 若仍有进行中的 reveal，挂起 finalize，待全部完成后再切换 scrollNode，避免丢最后一行
+    if (self.runningRevealAnimations > 0) {
+        self.pendingFinalizeAfterReveal = YES;
+        return;
+    }
+    NSString *full = [self.streamAccumulatedPlain copy] ?: @"";
+    if (full.length == 0) { self.isStreaming = NO; [self requestCoalescedLayout]; return; }
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        __strong typeof(weakSelf) strongSelf = weakSelf; if (!strongSelf) return;
+        NSAttributedString *highlighted = [strongSelf.highlighter highlightCode:full language:strongSelf.language fontSize:14];
+        NSMutableAttributedString *mutable = highlighted ? [[NSMutableAttributedString alloc] initWithAttributedString:highlighted] : [[NSMutableAttributedString alloc] initWithString:full attributes:@{ NSFontAttributeName: [UIFont monospacedSystemFontOfSize:14 weight:UIFontWeightRegular], NSForegroundColorAttributeName: strongSelf.highlighter.theme.text }];
+        NSMutableParagraphStyle *ps = [[NSMutableParagraphStyle alloc] init];
+        ps.lineBreakMode = NSLineBreakByClipping; ps.lineSpacing = 2;
+        [mutable addAttribute:NSParagraphStyleAttributeName value:ps range:NSMakeRange(0, mutable.length)];
+        // 计算最长行
+        CGFloat maxLineWidth = 0.0; UIFont *mono = [UIFont monospacedSystemFontOfSize:14 weight:UIFontWeightRegular];
+        for (NSString *ln in [full componentsSeparatedByString:@"\n"]) {
+            if (ln.length == 0) continue;
+            CGSize s = [ln boundingRectWithSize:CGSizeMake(CGFLOAT_MAX, CGFLOAT_MAX)
+                                       options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
+                                    attributes:@{ NSFontAttributeName: mono }
+                                       context:nil].size;
+            if (s.width > maxLineWidth) maxLineWidth = s.width;
+        }
+        CGFloat contentWidth = (strongSelf->_fixedContentWidth > 1.0) ? ceil(strongSelf->_fixedContentWidth) : ((maxLineWidth > 0.0) ? (ceil(maxLineWidth) + 4.0) : 1.0);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong typeof(weakSelf) self2 = weakSelf; if (!self2) return;
+            self2.code = full;
+            self2.appliedAttr = [mutable mutableCopy];
+            self2.codeNode.attributedText = [mutable copy];
+            self2->_cachedMaxLineWidth = contentWidth; self2->_hasCachedMaxLineWidth = YES;
+            self2->_codeNode.style.minWidth = ASDimensionMakeWithPoints(contentWidth);
+            self2->_codeNode.style.maxWidth = ASDimensionMakeWithPoints(contentWidth);
+            self2->_codeNode.style.width = ASDimensionMakeWithPoints(contentWidth);
+            [self2 ensureScrollContainerExists];
+            // 计算高度并设置容器高度，避免折叠
+            CGSize bound = [[self2.appliedAttr copy] boundingRectWithSize:CGSizeMake(contentWidth, CGFLOAT_MAX)
+                                                                  options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
+                                                                  context:nil].size;
+            CGFloat contentHeight = ceil(bound.height);
+            if (contentHeight < 1.0) { contentHeight = 1.0; }
+            self2.scrollNode.style.minHeight = ASDimensionMakeWithPoints(contentHeight);
+            self2.scrollNode.style.height = ASDimensionMakeWithPoints(contentHeight);
+            [self2.lineNodes removeAllObjects];
+            self2.isStreaming = NO;
+            [self2 setNeedsLayout];
+        });
+    });
+}
+
+- (void)setCodeLineRevealDuration:(NSTimeInterval)duration { _codeLineRevealDuration = MAX(0.01, duration); }
+
 // 合并应用待更新文本（节流到主线程下一帧）
 - (void)coalescedApplyPendingText {
     if (self.pendingTextApplyScheduled) { return; }
@@ -235,38 +405,15 @@
             strongSelf->_hasCachedMaxLineWidth = NO;
         }
         strongSelf.pendingIsAppend = NO;
-        strongSelf->_hasCachedHeight = NO;
+        // 移除未使用的高度缓存
+        // 按需创建滚动容器，仅在非流式阶段
+        [strongSelf ensureScrollContainerExists];
         [strongSelf updateCodeContentWidthAsync];
         [strongSelf setNeedsLayout];
     });
 }
 
-// 在流式渲染完成后执行一次性高亮，减少流中主线程压力
-- (void)finalizeHighlighting {
-    NSString *codeSnapshot = [self.code copy] ?: @"";
-    NSString *langSnapshot = [self.language copy] ?: @"plaintext";
-    if (codeSnapshot.length == 0) { return; }
-    __weak typeof(self) weakSelf = self;
-    dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        __strong typeof(weakSelf) strongSelf = weakSelf;
-        if (!strongSelf) { return; }
-        NSAttributedString *highlighted = [strongSelf.highlighter highlightCode:codeSnapshot language:langSnapshot fontSize:14];
-        if (!highlighted) { return; }
-        NSMutableAttributedString *mutable = [[NSMutableAttributedString alloc] initWithAttributedString:highlighted];
-        NSMutableParagraphStyle *ps = [[NSMutableParagraphStyle alloc] init];
-        ps.lineBreakMode = NSLineBreakByClipping;
-        ps.lineSpacing = 2;
-        [mutable addAttribute:NSParagraphStyleAttributeName value:ps range:NSMakeRange(0, mutable.length)];
-        dispatch_async(dispatch_get_main_queue(), ^{
-            strongSelf.appliedAttr = mutable;
-            strongSelf.codeNode.attributedText = [mutable copy];
-            strongSelf->_hasCachedMaxLineWidth = NO;
-            strongSelf->_hasCachedHeight = NO;
-            [strongSelf updateCodeContentWidthAsync];
-            [strongSelf setNeedsLayout];
-        });
-    });
-}
+// 移除未使用的 finalizeHighlighting（由流式或初始化路径负责完整高亮）
 
 // 新增：异步计算代码内容宽度并在主线程应用
 - (void)updateCodeContentWidthAsync {
@@ -285,6 +432,7 @@
         __strong typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf) return;
         CGFloat computedWidth = 0.0;
+        CGFloat computedHeight = 0.0;
         if (strongSelf->_fixedContentWidth > 1.0) {
             computedWidth = ceil(strongSelf->_fixedContentWidth);
         } else if (strongSelf->_hasCachedMaxLineWidth && strongSelf->_cachedMaxLineWidth > 0.0) {
@@ -305,16 +453,36 @@
             strongSelf->_hasCachedMaxLineWidth = YES;
         }
         if (computedWidth < 1.0) { computedWidth = 1.0; }
+        // 后台测高度
+        if (attr.length > 0) {
+            CGSize bound = [attr boundingRectWithSize:CGSizeMake(computedWidth, CGFLOAT_MAX)
+                                              options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
+                                              context:nil].size;
+            computedHeight = ceil(bound.height);
+            if (computedHeight < 1.0) { computedHeight = 1.0; }
+        }
         dispatch_async(dispatch_get_main_queue(), ^{
             __strong typeof(weakSelf) strongSelf2 = weakSelf;
             if (!strongSelf2) return;
             strongSelf2->_cachedMaxLineWidth = computedWidth;
             strongSelf2->_hasCachedMaxLineWidth = YES;
-            strongSelf2->_hasCachedHeight = NO;
             strongSelf2->_codeNode.style.minWidth = ASDimensionMakeWithPoints(computedWidth);
             strongSelf2->_codeNode.style.maxWidth = ASDimensionMakeWithPoints(computedWidth);
             strongSelf2->_codeNode.style.width = ASDimensionMakeWithPoints(computedWidth);
-            [strongSelf2 setNeedsLayout];
+            // 同步更新滚动容器高度，避免出现只有边框无内容的情况
+            if (!strongSelf2.isStreaming) {
+                [strongSelf2 ensureScrollContainerExists];
+                if (computedHeight > 1.0) {
+                    // 仅在增大时更新，避免频繁样式写入
+                    CGFloat newH = computedHeight;
+                    if (newH > strongSelf2->_appliedScrollHeight + 0.5) {
+                        strongSelf2->_appliedScrollHeight = newH;
+                        strongSelf2.scrollNode.style.minHeight = ASDimensionMakeWithPoints(newH);
+                        strongSelf2.scrollNode.style.height = ASDimensionMakeWithPoints(newH);
+                    }
+                }
+            }
+            [strongSelf2 requestCoalescedLayout];
         });
     });
 }
@@ -367,175 +535,121 @@
     [self setNeedsLayout];
 }
 
-// 手动设置 scrollNode 的 contentSize，避免横向滚动被重置
-- (void)layout {
-    CFTimeInterval __t0 = 0; CFTimeInterval __dt = 0;
-    #ifdef DEBUG
-    __t0 = CACurrentMediaTime();
-    #endif
-    [super layout];
-    // 若用户正在与代码滚动视图交互，避免在过程中重设 contentSize 造成回弹
-    if (self->_scrollNode.view.isDragging || self->_scrollNode.view.isTracking || self->_scrollNode.view.isDecelerating) {
-        return;
-    }
-    // 若当前帧内未发生文本/宽度变化且已有缓存，则跳过重复计算，降低 layout 频率
-    if (self->_hasCachedMaxLineWidth && self->_hasCachedHeight && self->_codeNode.attributedText.length > 0) {
-        // 仅在必要更新时才继续
-    } else {
-        // 计算内容宽高
-    }
-    // 计算内容宽高
-    CGFloat contentWidth = 0.0;
-    if (_fixedContentWidth > 1.0) {
-        contentWidth = ceil(_fixedContentWidth);
-    } else {
-        if (!_hasCachedMaxLineWidth) {
-            NSAttributedString *attr = self->_codeNode.attributedText ?: [[NSAttributedString alloc] initWithString:@""];
-            CGFloat maxLineWidth = 0.0;
-            UIFont *font = [UIFont monospacedSystemFontOfSize:14 weight:UIFontWeightRegular];
-            for (NSString *line in [attr.string componentsSeparatedByString:@"\n"]) {
-                if (line.length == 0) { continue; }
-                CGSize s = [line boundingRectWithSize:CGSizeMake(CGFLOAT_MAX, CGFLOAT_MAX)
-                                              options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
-                                           attributes:@{ NSFontAttributeName: font }
-                                              context:nil].size;
-                if (s.width > maxLineWidth) { maxLineWidth = s.width; }
-            }
-            _cachedMaxLineWidth = (maxLineWidth > 0.0) ? (ceil(maxLineWidth) + 4.0) : 0.0;
-            _hasCachedMaxLineWidth = YES;
-        }
-        contentWidth = _cachedMaxLineWidth;
-    }
-    if (contentWidth < 1.0) { contentWidth = self->_scrollNode.view.bounds.size.width; }
-    // 高度：使用文本测量高度或当前可见高度，确保不为0
-    CGFloat contentHeight = 0.0;
-    NSAttributedString *attrText = self->_codeNode.attributedText ?: [[NSAttributedString alloc] initWithString:@""];
-    if (attrText.length > 0 && contentWidth > 0.0) {
-        if (_hasCachedHeight && fabs(_cachedWidthForHeight - contentWidth) < 0.5) {
-            contentHeight = _cachedHeightForWidth;
-        } else {
-            CGSize bound = [attrText boundingRectWithSize:CGSizeMake(contentWidth, CGFLOAT_MAX)
-                                                 options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
-                                                 context:nil].size;
-            contentHeight = ceil(bound.height);
-            _cachedHeightForWidth = contentHeight;
-            _cachedWidthForHeight = contentWidth;
-            _hasCachedHeight = YES;
-        }
-    }
-    if (contentHeight < 1.0) { contentHeight = MAX(1.0, self->_scrollNode.view.bounds.size.height); }
-    // 设置 codeNode 的 frame 以匹配内容尺寸（高度仅允许单调递增，避免果冻回弹）
-    CGRect codeFrame = self->_codeNode.frame;
-    codeFrame.origin = CGPointZero;
-    CGSize desired = CGSizeMake(contentWidth, contentHeight);
-    CGSize current = self->_codeNode.frame.size;
-    CGSize applied = CGSizeMake(desired.width, MAX(current.height, desired.height));
-    if (!CGSizeEqualToSize(current, applied)) {
-        self->_codeNode.frame = (CGRect){CGPointZero, applied};
-    }
-    // 设置内容尺寸（高度同样单调递增）
-    CGSize target = CGSizeMake(desired.width, MAX(self->_scrollNode.view.contentSize.height, desired.height));
-    if (!CGSizeEqualToSize(self->_scrollNode.view.contentSize, target)) {
-        self->_scrollNode.view.contentSize = target;
-    }
-    (void)__t0; (void)__dt;
-}
+// 不再覆写 layout，交给 Texture 自动内容尺寸与布局
 
 - (void)setFixedContentWidth:(CGFloat)width {
     _fixedContentWidth = MAX(0, width);
     _hasCachedMaxLineWidth = NO;
-    _hasCachedHeight = NO;
-    [self updateCodeContentWidth];
+    // 移除未使用的高度缓存
+    if (!self.isStreaming) {
+        [self ensureScrollContainerExists];
+        [self updateCodeContentWidthAsync];
+    }
 }
 
 - (ASLayoutSpec *)layoutSpecThatFits:(ASSizeRange)constrainedSize {
-    // 头部行：语言标签 + 复制按钮
+    [self prepareHeaderPreferredSizesIfNeeded];
     ASStackLayoutSpec *headerRow = [ASStackLayoutSpec stackLayoutSpecWithDirection:ASStackLayoutDirectionHorizontal
                                                                            spacing:8
                                                                     justifyContent:ASStackLayoutJustifyContentSpaceBetween
                                                                         alignItems:ASStackLayoutAlignItemsCenter
                                                                           children:@[_langNode, _duplicateButton]];
     headerRow.style.height = ASDimensionMake(32);
-    
-    // 头部容器
     ASInsetLayoutSpec *headerInset = [ASInsetLayoutSpec insetLayoutSpecWithInsets:UIEdgeInsetsMake(4, 12, 4, 12) child:headerRow];
-    
-    // 计算代码内容高度，为滚动容器提供最小高度，避免在垂直栈中被压缩为0
-    CGFloat measuredContentWidth = 0.0;
-    if (_fixedContentWidth > 1.0) {
-        measuredContentWidth = ceil(_fixedContentWidth);
+
+    ASLayoutSpec *contentSpec = nil;
+    if (self.isStreaming) {
+        NSArray<ASDisplayNode *> *children = self.lineNodes.count > 0 ? self.lineNodes : @[];
+        ASStackLayoutSpec *linesStack = [ASStackLayoutSpec stackLayoutSpecWithDirection:ASStackLayoutDirectionVertical
+                                                                                spacing:2
+                                                                         justifyContent:ASStackLayoutJustifyContentStart
+                                                                             alignItems:ASStackLayoutAlignItemsStretch
+                                                                               children:children];
+        contentSpec = [ASInsetLayoutSpec insetLayoutSpecWithInsets:UIEdgeInsetsMake(8, 12, 8, 12) child:linesStack];
     } else {
-        if (!_hasCachedMaxLineWidth) {
-            NSAttributedString *attr = self->_codeNode.attributedText ?: [[NSAttributedString alloc] initWithString:@""];
-            CGFloat maxLineWidth = 0.0;
-            UIFont *font = [UIFont monospacedSystemFontOfSize:14 weight:UIFontWeightRegular];
-            for (NSString *line in [attr.string componentsSeparatedByString:@"\n"]) {
-                if (line.length == 0) { continue; }
-                CGSize s = [line boundingRectWithSize:CGSizeMake(CGFLOAT_MAX, CGFLOAT_MAX)
-                                              options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
-                                           attributes:@{ NSFontAttributeName: font }
-                                              context:nil].size;
-                if (s.width > maxLineWidth) { maxLineWidth = s.width; }
-            }
-            _cachedMaxLineWidth = (maxLineWidth > 0.0) ? (ceil(maxLineWidth) + 4.0) : 0.0;
-            _hasCachedMaxLineWidth = YES;
-        }
-        measuredContentWidth = _cachedMaxLineWidth;
-    }
-    CGFloat measuredContentHeight = 0.0;
-    NSAttributedString *attrText = self->_codeNode.attributedText ?: [[NSAttributedString alloc] initWithString:@""];
-    if (attrText.length > 0 && measuredContentWidth > 0.0) {
-        if (_hasCachedHeight && fabs(_cachedWidthForHeight - measuredContentWidth) < 0.5) {
-            measuredContentHeight = _cachedHeightForWidth;
+        if (!self.scrollNode) {
+            // 尚未创建，临时使用 codeNode 直接显示
+            ASInsetLayoutSpec *inner = [ASInsetLayoutSpec insetLayoutSpecWithInsets:UIEdgeInsetsMake(8, 12, 8, 12) child:self.codeNode];
+            contentSpec = inner;
         } else {
-            CGSize bound = [attrText boundingRectWithSize:CGSizeMake(measuredContentWidth, CGFLOAT_MAX)
-                                                 options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
-                                                 context:nil].size;
-            measuredContentHeight = ceil(bound.height);
-            _cachedHeightForWidth = measuredContentHeight;
-            _cachedWidthForHeight = measuredContentWidth;
-            _hasCachedHeight = YES;
+            if (_heightLocked && _lockedHeight > 1.0) {
+                self.scrollNode.style.minHeight = ASDimensionMakeWithPoints(_lockedHeight);
+                self.scrollNode.style.height = ASDimensionMakeWithPoints(_lockedHeight);
+            }
+            contentSpec = [ASInsetLayoutSpec insetLayoutSpecWithInsets:UIEdgeInsetsMake(8, 12, 8, 12) child:self.scrollNode];
         }
     }
-    // 至少给一个很小的高度，避免完全折叠
-    CGFloat containerHeight = measuredContentHeight;
-    if (_heightLocked && _lockedHeight > 1.0) {
-        containerHeight = _lockedHeight;
-    }
-    self->_scrollNode.style.minHeight = ASDimensionMakeWithPoints(MAX(1.0, containerHeight));
-    self->_scrollNode.style.height = ASDimensionMakeWithPoints(MAX(1.0, containerHeight));
-    
-    // 代码内容容器（横向滚动）
-    ASInsetLayoutSpec *scrollInset = [ASInsetLayoutSpec insetLayoutSpecWithInsets:UIEdgeInsetsMake(8, 12, 8, 12) child:_scrollNode];
-    
-    // 垂直堆叠：头部 + 代码
+
     ASStackLayoutSpec *verticalStack = [ASStackLayoutSpec stackLayoutSpecWithDirection:ASStackLayoutDirectionVertical
                                                                                spacing:0
                                                                         justifyContent:ASStackLayoutJustifyContentStart
                                                                             alignItems:ASStackLayoutAlignItemsStretch
-                                                                              children:@[headerInset, scrollInset]];
-    
+                                                                              children:@[headerInset, contentSpec]];
     return verticalStack;
 }
 
 - (void)didLoad {
     [super didLoad];
-    // 配置滚动视图手势，优先横向，允许与外层表同时识别
-    self->_scrollNode.view.showsHorizontalScrollIndicator = YES;
-    self->_scrollNode.view.showsVerticalScrollIndicator = NO;
-    self->_scrollNode.view.bounces = YES;
-    self->_scrollNode.view.alwaysBounceHorizontal = YES;
-    self->_scrollNode.view.alwaysBounceVertical = NO;
-    self->_scrollNode.view.directionalLockEnabled = YES;
-    self->_scrollNode.view.scrollsToTop = NO;
-    self->_scrollNode.view.scrollEnabled = YES;
-    self->_scrollNode.view.indicatorStyle = UIScrollViewIndicatorStyleDefault;
-    if (@available(iOS 11.0, *)) {
-        self->_scrollNode.view.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
+    if (self.scrollNode) {
+        self.scrollNode.view.showsHorizontalScrollIndicator = YES;
+        self.scrollNode.view.showsVerticalScrollIndicator = NO;
+        self.scrollNode.view.bounces = YES;
+        self.scrollNode.view.alwaysBounceHorizontal = YES;
+        self.scrollNode.view.alwaysBounceVertical = NO;
+        self.scrollNode.view.directionalLockEnabled = YES;
+        self.scrollNode.view.scrollsToTop = NO;
+        self.scrollNode.view.scrollEnabled = YES;
+        self.scrollNode.view.indicatorStyle = UIScrollViewIndicatorStyleDefault;
+        if (@available(iOS 11.0, *)) {
+            self.scrollNode.view.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
+        }
+        if (self.scrollNode.view.panGestureRecognizer) {
+            [self.scrollNode.view.panGestureRecognizer addTarget:self action:@selector(_onCodeScrollPan:)];
+        }
     }
-    if (self->_scrollNode.view.panGestureRecognizer) {
-        // 监听代码块横向滚动手势，传播到控制器以暂停自动粘底/布局
-        [self->_scrollNode.view.panGestureRecognizer addTarget:self action:@selector(_onCodeScrollPan:)];
+}
+
+#pragma mark - Header 预计算尺寸与滚动容器
+
+- (void)prepareHeaderPreferredSizesIfNeeded {
+    if (self.headerSizePrepared) return;
+    NSString *lang = self.language.length ? self.language.uppercaseString : @"PLAINTEXT";
+    UIFont *lf = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
+    CGSize lsz = [lang boundingRectWithSize:CGSizeMake(CGFLOAT_MAX, CGFLOAT_MAX)
+                                    options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
+                                 attributes:@{ NSFontAttributeName: lf }
+                                    context:nil].size;
+    self.langPreferredSize = CGSizeMake(ceil(lsz.width), ceil(MAX(16.0, lsz.height)));
+    self.duplicatePreferredSize = CGSizeMake(44.0, 24.0);
+    self.langNode.style.preferredSize = self.langPreferredSize;
+    self.duplicateButton.style.preferredSize = self.duplicatePreferredSize;
+    self.headerSizePrepared = YES;
+}
+
+- (void)ensureScrollContainerExists {
+    if (!self.scrollNode) {
+        self.scrollNode = [[ASScrollNode alloc] init];
+    }
+    self.scrollNode.automaticallyManagesSubnodes = YES;
+    self.scrollNode.automaticallyManagesContentSize = YES;
+    self.scrollNode.scrollableDirections = ASScrollDirectionHorizontalDirections;
+    self.scrollNode.style.flexGrow = 1.0;
+    self.scrollNode.style.flexShrink = 1.0;
+    self.scrollNode.view.showsHorizontalScrollIndicator = YES;
+    self.scrollNode.view.alwaysBounceHorizontal = YES;
+    self.scrollNode.view.alwaysBounceVertical = NO;
+    self.scrollNode.view.directionalLockEnabled = YES;
+    self.scrollNode.view.delaysContentTouches = NO;
+    self.scrollNode.view.canCancelContentTouches = YES;
+    self.scrollNode.view.panGestureRecognizer.cancelsTouchesInView = NO;
+    __weak typeof(self) weakSelf = self;
+    self.scrollNode.layoutSpecBlock = ^ASLayoutSpec * _Nonnull(__kindof ASDisplayNode * _Nonnull node, ASSizeRange constrainedSize) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) { return [ASLayoutSpec new]; }
+        return [ASWrapperLayoutSpec wrapperWithLayoutElement:strongSelf.codeNode];
+    };
+    if (self.isNodeLoaded && self.scrollNode.view.panGestureRecognizer) {
+        [self.scrollNode.view.panGestureRecognizer addTarget:self action:@selector(_onCodeScrollPan:)];
     }
 }
 
@@ -551,9 +665,11 @@
 
 - (void)didEnterVisibleState {
     [super didEnterVisibleState];
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [self->_scrollNode.view flashScrollIndicators];
-    });
+    if (self.scrollNode) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self.scrollNode.view flashScrollIndicators];
+        });
+    }
 }
 
 #pragma mark - UIGestureRecognizerDelegate
@@ -574,8 +690,6 @@
 - (void)lockContentHeight:(CGFloat)height {
     _heightLocked = YES;
     _lockedHeight = MAX(1.0, height);
-    // 清理高度缓存，立即应用锁定高度
-    _hasCachedHeight = NO;
     [self setNeedsLayout];
 }
 
@@ -587,7 +701,55 @@
     [self setNeedsLayout];
 }
 
+// MARK: - 文本行蒙版渐显（左到右）
+
+- (void)_applyLeftToRightRevealMaskOnNode:(ASDisplayNode *)node
+                                  duration:(NSTimeInterval)duration
+                                      tries:(NSInteger)tries
+                                 completion:(dispatch_block_t)completion {
+    if (!node) { if (completion) completion(); return; }
+    CALayer *targetLayer = node.layer;
+    if (!targetLayer) { if (completion) completion(); return; }
+    CGSize size = node.bounds.size;
+    if ((size.width < 1.0 || size.height < 1.0) && tries > 0) {
+        __weak typeof(self) weakSelf = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.016 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) { if (completion) completion(); return; }
+            [strongSelf _applyLeftToRightRevealMaskOnNode:node duration:duration tries:(tries - 1) completion:completion];
+        });
+        return;
+    }
+    if (size.width < 1.0 || size.height < 1.0) {
+        if (completion) completion();
+        return;
+    }
+    CALayer *maskLayer = [CALayer layer];
+    maskLayer.backgroundColor = [UIColor blackColor].CGColor;
+    maskLayer.anchorPoint = CGPointMake(0.0, 0.5);
+    maskLayer.bounds = CGRectMake(0, 0, size.width, size.height);
+    maskLayer.position = CGPointMake(0, size.height * 0.5);
+    maskLayer.transform = CATransform3DMakeScale(0.0, 1.0, 1.0);
+    targetLayer.mask = maskLayer;
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    [CATransaction setCompletionBlock:^{
+        maskLayer.transform = CATransform3DIdentity;
+        targetLayer.mask = nil;
+        if (completion) completion();
+    }];
+    CABasicAnimation *anim = [CABasicAnimation animationWithKeyPath:@"transform.scale.x"];
+    anim.fromValue = @(0.0);
+    anim.toValue = @(1.0);
+    anim.duration = MAX(0.01, duration);
+    anim.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+    [maskLayer addAnimation:anim forKey:@"revealX"];
+    maskLayer.transform = CATransform3DIdentity;
+    [CATransaction commit];
+}
+
 @end
+
 
 
 

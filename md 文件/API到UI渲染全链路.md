@@ -153,3 +153,8 @@
    - 继续：将块喂给 `_currentUpdatingAINode`
 4. Cell 将块切行并逐行渲染；逐行事件驱动粘底
 5. 结束：保存最终文本到 CoreData；Cell 做完整解析与最终布局
+
+
+
+
+

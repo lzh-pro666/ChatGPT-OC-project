@@ -3,6 +3,7 @@
 #import "AIMarkdownParser.h"
 #import "AICodeBlockNode.h"
 #import <QuartzCore/QuartzCore.h>
+#import <AsyncDisplayKit/ASTextNode2.h>
 
 // MARK: - 富文本消息节点
 @interface RichMessageCellNode ()
@@ -58,6 +59,11 @@
 @property (nonatomic, assign) NSTimeInterval minLineRenderInterval;
 @property (nonatomic, assign) NSTimeInterval lastLineRenderTime;
 @property (nonatomic, assign) NSInteger activeTextRevealAnimations; // 运行中渐显动画计数（用于排查并发）
+@property (nonatomic, assign) NSInteger activeCodeRevealAnimations; // 运行中的代码行渐显计数
+@property (nonatomic, assign) NSTimeInterval replyRenderStartTime; // 本条回复开始渲染时间
+@property (nonatomic, assign) NSInteger totalRenderedLines; // 已完成渐显的总行数（文本+代码）
+@property (nonatomic, assign) BOOL isLineTaskRunning; // 防止 performNextLineTask 并发
+@property (nonatomic, assign) BOOL isLineDispatchScheduled; // 防止重复 dispatch_after 调度
 
 @end
 
@@ -105,13 +111,16 @@
         
         // 新增：逐行渲染默认间隔与计数（统一 0.41675s）
         _lineRenderInterval = 0.5;
-        _codeLineRenderInterval = 0.5;
+        _codeLineRenderInterval = 0.1;
         _currentBlockRenderedLineIndex = 0;
         _textLineRevealDuration = 0.5;
         _bypassIntervalOnce = NO;
         _minLineRenderInterval = 0.05; // 每行至少 50ms 间隔
         _lastLineRenderTime = 0;
         _activeTextRevealAnimations = 0;
+        _activeCodeRevealAnimations = 0;
+        _replyRenderStartTime = CACurrentMediaTime();
+        _totalRenderedLines = 0;
         
         // 关键改进：确保富文本效果持久化，重新进入聊天界面时不会丢失
         if (message.length > 0) {
@@ -177,8 +186,8 @@
     BOOL canUseDynamicSingleLine = (self.renderNodes.count == 1);
     if (canUseDynamicSingleLine) {
         ASDisplayNode *only = self.renderNodes.firstObject;
-        if ([only isKindOfClass:[ASTextNode class]]) {
-            ASTextNode *t = (ASTextNode *)only;
+        if ([only isKindOfClass:[ASTextNode2 class]]) {
+            ASTextNode2 *t = (ASTextNode2 *)only;
             NSString *s = t.attributedText.string ?: @"";
             if (s.length > 0 && [s rangeOfString:@"\n"].location == NSNotFound) {
                 UIFont *font = [t.attributedText attribute:NSFontAttributeName atIndex:0 effectiveRange:NULL] ?: [UIFont systemFontOfSize:16];
@@ -254,7 +263,7 @@
         }
         // 关键修复：确保带有附件的消息也能正确显示文本内容（即使已添加附件行）
         if ((renderChildren.count == 0) && (strongSelf.currentMessage.length > 0) && !strongSelf.isStreamingMode) {
-            ASTextNode *placeholderNode = [[ASTextNode alloc] init];
+            ASTextNode2 *placeholderNode = [[ASTextNode2 alloc] init];
             placeholderNode.attributedText = [strongSelf attributedStringForText:(strongSelf.currentMessage ?: @"")];
             placeholderNode.maximumNumberOfLines = 0;
             placeholderNode.style.flexGrow = 1.0;
@@ -266,7 +275,7 @@
         // 关键修复：如果只有附件没有文本内容，确保消息仍然可见
         if (children.count == 0 && strongSelf.attachmentsData.count > 0) {
             // 创建一个空的文本节点作为占位符，确保消息气泡可见
-            ASTextNode *emptyNode = [[ASTextNode alloc] init];
+            ASTextNode2 *emptyNode = [[ASTextNode2 alloc] init];
             emptyNode.attributedText = [[NSAttributedString alloc] initWithString:@""];
             emptyNode.style.flexGrow = 1.0;
             emptyNode.style.flexShrink = 1.0;
@@ -478,7 +487,7 @@
         }
         // 非流式：如果消息不为空但解析失败，显示原始消息（富文本基础样式）
         NSString *displayText = self.currentMessage;
-        ASTextNode *defaultTextNode = [self getOrCreateTextNodeForText:displayText];
+        ASTextNode2 *defaultTextNode = [self getOrCreateTextNodeForText:displayText];
         defaultTextNode.alpha = 1.0;
         if (![addedNodes containsObject:defaultTextNode]) {
             [childNodes addObject:defaultTextNode];
@@ -514,7 +523,7 @@
                 }
             } else {
                 // 创建文本节点
-                ASTextNode *textNode = [self getOrCreateTextNodeForAttributedString:result.attributedString];
+                ASTextNode2 *textNode = [self getOrCreateTextNodeForAttributedString:result.attributedString];
                 
                 if (![addedNodes containsObject:textNode]) {
                     [childNodes addObject:textNode];
@@ -534,7 +543,7 @@
             return;
         }
         
-        ASTextNode *fallbackNode = [self getOrCreateTextNodeForText:fallbackText];
+        ASTextNode2 *fallbackNode = [self getOrCreateTextNodeForText:fallbackText];
         // 关键修复：确保占位符节点可以显示完整内容
         fallbackNode.style.flexGrow = 1.0;
         fallbackNode.style.flexShrink = 1.0;
@@ -741,12 +750,12 @@
 }
 
 // 统一的文本节点创建方法
-- (ASTextNode *)getOrCreateTextNodeForText:(NSString *)text {
+- (ASTextNode2 *)getOrCreateTextNodeForText:(NSString *)text {
     NSString *cacheKey = [NSString stringWithFormat:@"text_%@", text];
-    ASTextNode *cachedNode = self.nodeCache[cacheKey];
+    ASTextNode2 *cachedNode = self.nodeCache[cacheKey];
     
     if (!cachedNode) {
-        cachedNode = [[ASTextNode alloc] init];
+        cachedNode = [[ASTextNode2 alloc] init];
         cachedNode.attributedText = [self attributedStringForText:text];
         cachedNode.maximumNumberOfLines = 0;
         cachedNode.style.flexGrow = 1.0;
@@ -758,12 +767,12 @@
 }
 
 // 统一的富文本节点创建方法
-- (ASTextNode *)getOrCreateTextNodeForAttributedString:(NSAttributedString *)attributedString {
+- (ASTextNode2 *)getOrCreateTextNodeForAttributedString:(NSAttributedString *)attributedString {
     NSString *cacheKey = [NSString stringWithFormat:@"attributed_%lu", (unsigned long)attributedString.hash];
-    ASTextNode *cachedNode = self.nodeCache[cacheKey];
+    ASTextNode2 *cachedNode = self.nodeCache[cacheKey];
     
     if (!cachedNode) {
-        cachedNode = [[ASTextNode alloc] init];
+        cachedNode = [[ASTextNode2 alloc] init];
         cachedNode.attributedText = attributedString;
         cachedNode.maximumNumberOfLines = 0;
         cachedNode.style.flexGrow = 1.0;
@@ -891,8 +900,8 @@
                         // 更新对应的渲染节点
                         if (i < self.renderNodes.count) {
                             ASDisplayNode *existingNode = self.renderNodes[i];
-                            if ([existingNode isKindOfClass:[ASTextNode class]]) {
-                                ASTextNode *textNode = (ASTextNode *)existingNode;
+                            if ([existingNode isKindOfClass:[ASTextNode2 class]]) {
+                                ASTextNode2 *textNode = (ASTextNode2 *)existingNode;
                                 
                                 // 检查高度是否会发生显著变化
                                 CGSize oldSize = [textNode.attributedText boundingRectWithSize:CGSizeMake(textNode.bounds.size.width, CGFLOAT_MAX) 
@@ -1060,6 +1069,7 @@
 // 新增：在控制器通知“流式结束”时确保触发最终一次行渲染推进
 - (void)ensureFinalFlushAfterStreamDone {
     if (!self.isStreamingMode) { return; }
+    // 仅做最终一次完整解析刷新，不在此处主动 finalize 代码块，避免重复收尾与闪烁
     [self completeStreamingUpdate];
 }
 
@@ -1228,7 +1238,6 @@
                         }
                         maxLineWidth = ceil(maxLineWidth) + 4.0;
                         
-                        
                         BOOL isFirst = YES;
                         for (NSString *line in codeLines) {
                             NSString *ln = line ?: @"";
@@ -1391,6 +1400,8 @@
 - (void)scheduleNextLineTask {
     if (self.currentBlockLineTasks.count == 0) {
         // 尝试处理下一个块
+        // 若存在活动代码节点，且刚完成一个代码块，切换其为滚动容器
+        // 不再直接 finalize；交由代码节点在最后一个行的 reveal 完成回调里自行 finalize，避免丢最后一行
         [self processNextSemanticBlockIfIdle];
         return;
     }
@@ -1400,8 +1411,8 @@
     // 为了平滑，使用可配置间隔（首行立即渲染，其余延迟）；代码行使用更长延迟
     NSDictionary *nextTask = [self.currentBlockLineTasks firstObject];
     BOOL isCode = [[nextTask objectForKey:@"type"] isEqualToString:@"code_line"];
-    // 若当前已有文本行渐显在进行，跳过额外调度，等待动画完成回调推进
-    if (!isCode && self.activeTextRevealAnimations > 0) {
+    // 渐显并发门闸：文本与代码各自保证串行
+    if ((!isCode && self.activeTextRevealAnimations > 0) || (isCode && self.activeCodeRevealAnimations > 0)) {
         return;
     }
     NSTimeInterval baseInterval = isCode ? (self.codeLineRenderInterval > 0.0 ? self.codeLineRenderInterval : 0.3)
@@ -1418,9 +1429,12 @@
     }
     (void)baseInterval; (void)need; // silence unused in release
     __weak typeof(self) weakSelf = self;
+    if (self.isLineDispatchScheduled) { return; }
+    self.isLineDispatchScheduled = YES;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(interval * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         __strong typeof(weakSelf) strongSelf = weakSelf;
         if (!strongSelf) return;
+        strongSelf.isLineDispatchScheduled = NO;
         strongSelf.lastLineRenderTime = CACurrentMediaTime();
         if (strongSelf.isSchedulingPaused) { return; }
         [strongSelf performNextLineTask];
@@ -1433,6 +1447,8 @@
         [self processNextSemanticBlockIfIdle];
         return;
     }
+    if (self.isLineTaskRunning) { return; }
+    self.isLineTaskRunning = YES;
     if (self.isSchedulingPaused) { return; }
     // 在首行实际追加前发出"即将追加首行"的事件，便于控制器先移除Thinking
     // 只有在整条回复的第一行到来时，才触发“首行即将追加”的事件
@@ -1456,14 +1472,14 @@
         if (line && line.length > 0) {
             // 相邻文本节点内容相同则跳过，避免渲染重复行
             ASDisplayNode *prev = self.renderNodes.lastObject;
-            if ([prev isKindOfClass:[ASTextNode class]]) {
-                ASTextNode *prevText = (ASTextNode *)prev;
+            if ([prev isKindOfClass:[ASTextNode2 class]]) {
+                ASTextNode2 *prevText = (ASTextNode2 *)prev;
                 if ([prevText.attributedText.string ?: @"" isEqualToString:line.string ?: @""]) {
                     [self scheduleNextLineTask];
                     return;
                 }
             }
-            ASTextNode *textNode = [[ASTextNode alloc] init];
+            ASTextNode2 *textNode = [[ASTextNode2 alloc] init];
             textNode.layerBacked = YES; // 减少 UIView 开销
             textNode.attributedText = line;
             textNode.maximumNumberOfLines = 0;
@@ -1479,17 +1495,24 @@
             // 对新增文本行应用从左到右的蒙版渐显动画，动画完成后再推进下一行
             __weak typeof(self) weakSelf = self;
             [self immediateLayoutUpdate];
-            dispatch_async(dispatch_get_main_queue(), ^{
-                __strong typeof(weakSelf) strongSelf = weakSelf;
-                if (!strongSelf) { return; }
-                strongSelf.activeTextRevealAnimations += 1;
-                [strongSelf _applyLeftToRightRevealMaskOnNode:textNode duration:strongSelf.textLineRevealDuration completion:^{
-                    strongSelf.activeTextRevealAnimations = MAX(0, strongSelf.activeTextRevealAnimations - 1);
-                    // 动画结束后立即推进下一行（本次跳过间隔）
-                    strongSelf.bypassIntervalOnce = YES;
-                    [strongSelf scheduleNextLineTask];
-                }];
-            });
+            // 立即在当前主线程开启动画，先加锁，避免窗口期并发
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf) { return; }
+            strongSelf.activeTextRevealAnimations += 1;
+            NSInteger localIdx = strongSelf.currentBlockRenderedLineIndex + 1;
+                // 日志：文本行开始渐显
+            NSTimeInterval t0 = CACurrentMediaTime();
+            (void)localIdx; (void)t0; // remove logs
+            [strongSelf _applyLeftToRightRevealMaskOnNode:textNode duration:strongSelf.textLineRevealDuration completion:^{
+                strongSelf.activeTextRevealAnimations = MAX(0, strongSelf.activeTextRevealAnimations - 1);
+                // 动画结束后立即推进下一行（本次跳过间隔）
+                NSTimeInterval t1 = CACurrentMediaTime();
+                strongSelf.totalRenderedLines += 1;
+                (void)t1; // remove logs
+                strongSelf.bypassIntervalOnce = YES;
+                strongSelf.isLineTaskRunning = NO;
+                [strongSelf scheduleNextLineTask];
+            }];
         } else {
             
             // 尝试使用备用文本创建
@@ -1498,7 +1521,7 @@
                 fallbackText = task[@"attr"];
             }
             if (fallbackText.length > 0) {
-                ASTextNode *textNode = [[ASTextNode alloc] init];
+                ASTextNode2 *textNode = [[ASTextNode2 alloc] init];
                 textNode.layerBacked = YES; // 减少 UIView 开销
                 textNode.attributedText = [self attributedStringForText:fallbackText];
                 textNode.maximumNumberOfLines = 0;
@@ -1520,36 +1543,30 @@
         
         if (isStart || !self.activeCodeNode) {
             self.activeCodeNode = [[AICodeBlockNode alloc] initWithCode:@"" language:lang isFromUser:self.isFromUser];
-            
-            // 传入此块的最大行宽，确保scroll内容宽度足够
-            NSNumber *maxW = task[@"maxWidth"];
-            if ([maxW isKindOfClass:[NSNumber class]] && maxW.doubleValue > 0) {
-                [self.activeCodeNode setFixedContentWidth:maxW.doubleValue];
-            }
-            
-            // 确保代码节点可见
+            NSNumber *maxW = task[@"maxWidth"]; if ([maxW isKindOfClass:[NSNumber class]] && maxW.doubleValue > 0) { [self.activeCodeNode setFixedContentWidth:maxW.doubleValue]; }
             self.activeCodeNode.alpha = 1.0;
-            
             NSMutableArray *mutable = self.renderNodes ? [self.renderNodes mutableCopy] : [NSMutableArray array];
             [mutable addObject:self.activeCodeNode];
             self.renderNodes = [mutable copy];
             self.activeAccumulatedCode = @"";
-            
-            
         }
-        
-        // 追加一行并更新代码块
         if (lineText && lineText.length > 0) {
-            // 若上一行相同，跳过重复追加
             if ([self.activeAccumulatedCode hasSuffix:[@"\n" stringByAppendingString:lineText]] || [self.activeAccumulatedCode isEqualToString:lineText]) {
                 [self scheduleNextLineTask];
                 return;
             }
             self.activeAccumulatedCode = self.activeAccumulatedCode.length > 0 ? [self.activeAccumulatedCode stringByAppendingFormat:@"\n%@", lineText] : lineText;
-            [self.activeCodeNode updateCodeText:self.activeAccumulatedCode];
-            
+            BOOL first = isStart && (self.activeAccumulatedCode.length > 0);
+            self.activeCodeRevealAnimations += 1; // 加锁，避免并发
+            __weak typeof(self) weakSelf = self;
+            [self.activeCodeNode appendCodeLine:lineText isFirst:first completion:^{
+                __strong typeof(weakSelf) strongSelf = weakSelf; if (!strongSelf) return;
+                // 代码行：在渐显动画完成后推进下一行，避免多行同时渐显
+                strongSelf.activeCodeRevealAnimations = MAX(0, strongSelf.activeCodeRevealAnimations - 1);
+                strongSelf.isLineTaskRunning = NO;
+                [strongSelf scheduleNextLineTask];
+            }];
         } else {
-            
         }
     }
     // 使用节流布局更新，减少主线程压力并提升手势响应
@@ -1559,10 +1576,7 @@
     
     // 推进下一行：
     // - 文本行在动画完成回调中推进
-    // - 代码行按节奏立即推进
-    if ([type isEqualToString:@"code_line"]) {
-        [self scheduleNextLineTask];
-    }
+    // - 代码行在 appendCodeLine 的 completion 中推进
 }
 
 // 新增：外部可配置每行渲染间隔

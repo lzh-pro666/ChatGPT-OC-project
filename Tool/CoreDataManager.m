@@ -125,8 +125,6 @@
         [self addMessageToChat:chat1 content:@"您好！我是ChatGPT，一个AI助手。我可以帮助您解答问题，请问有什么我可以帮您的吗？" isFromUser:NO];
         [self addMessageToChat:chat1 content:@"可以帮我解释一下iOS的导航模式吗？" isFromUser:YES];
         [self addMessageToChat:chat1 content:@"iOS有两种主要的导航模式：\n\n1. 层级导航（Hierarchical）\n- 使用UINavigationController\n- 适合展示层级内容\n- 支持返回手势\n\n2. 平铺导航（Flat）\n- 使用UITabBarController\n- 适合同级内容切换\n- 底部标签栏导航\n\n3. 模态导航（Modal）\n- 临时打断当前任务\n- 完整的上下文切换\n- 支持多种展示方式" isFromUser:NO];
-        
-        
     }
 }
 
